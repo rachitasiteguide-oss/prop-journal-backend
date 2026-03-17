@@ -1,0 +1,147 @@
+// This is your Prisma schema file.
+// Learn more: https://pris.ly/d/prisma-schema
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ── User ─────────────────────────────────────────────────────────────────────
+
+model User {
+  id        String   @id @default(cuid())
+  email     String   @unique
+  name      String?
+  avatar    String?
+  googleId  String?  @unique
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  accounts   Account[]
+  challenges Challenge[]
+
+  @@map("users")
+}
+
+// ── Account ──────────────────────────────────────────────────────────────────
+// Represents a trading account (live, demo, or prop firm account)
+
+enum AccountType {
+  LIVE
+  DEMO
+  PROP
+}
+
+model Account {
+  id          String      @id @default(cuid())
+  userId      String
+  user        User        @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  name        String
+  broker      String?
+  accountType AccountType @default(DEMO)
+  balance     Float       @default(0)
+  currency    String      @default("USD")
+  isActive    Boolean     @default(true)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  trades Trade[]
+
+  @@index([userId])
+  @@map("accounts")
+}
+
+// ── Trade ─────────────────────────────────────────────────────────────────────
+
+enum TradeSide {
+  BUY
+  SELL
+}
+
+enum TradeStatus {
+  OPEN
+  CLOSED
+}
+
+model Trade {
+  id        String @id @default(cuid())
+  accountId String
+  account   Account @relation(fields: [accountId], references: [id], onDelete: Cascade)
+
+  symbol     String
+  side       TradeSide
+  entryPrice Float
+  exitPrice  Float?
+  volume     Float       // lot size
+  pnl        Float?      // realized profit/loss in account currency
+  commission Float?      @default(0)
+  swap       Float?      @default(0)
+
+  status  TradeStatus @default(OPEN)
+  entryAt DateTime
+  exitAt  DateTime?
+
+  notes    String?
+  tags     String[]    @default([])
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([accountId])
+  @@index([status])
+  @@index([entryAt])
+  @@map("trades")
+}
+
+// ── Challenge ─────────────────────────────────────────────────────────────────
+// Tracks a prop firm evaluation challenge
+
+enum ChallengePhase {
+  PHASE_1
+  PHASE_2
+  FUNDED
+}
+
+enum ChallengeStatus {
+  ACTIVE
+  PASSED
+  FAILED
+  WITHDRAWN
+}
+
+model Challenge {
+  id     String @id @default(cuid())
+  userId String
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  firmName    String
+  phase       ChallengePhase  @default(PHASE_1)
+  accountSize Float           // e.g. 100000 for $100k account
+  currency    String          @default("USD")
+
+  // Rules
+  profitTarget  Float  // e.g. 0.10 = 10%
+  maxDrawdown   Float  // e.g. 0.10 = 10% (overall)
+  dailyDrawdown Float  // e.g. 0.05 = 5% (daily)
+  minTradingDays Int   @default(0)
+
+  startDate DateTime
+  endDate   DateTime?
+
+  status ChallengeStatus @default(ACTIVE)
+  notes  String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([userId])
+  @@index([status])
+  @@map("challenges")
+}
