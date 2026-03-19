@@ -18,6 +18,7 @@ model User {
   name      String?
   avatar    String?
   googleId  String?  @unique
+  password  String?  // null for Google-only users
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt

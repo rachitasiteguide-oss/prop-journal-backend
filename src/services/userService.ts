@@ -2,11 +2,11 @@ import { User } from '@prisma/client';
 import { prisma } from '../config/db';
 import { AppError } from '../middlewares/errorHandler';
 
-export type PublicUser = Omit<User, 'googleId'>;
+export type PublicUser = Omit<User, 'googleId' | 'password'>;
 
 export function toPublicUser(user: User): PublicUser {
   // eslint-disable-next-line @typescript-eslint/no-unused-vars
-  const { googleId: _, ...publicUser } = user;
+  const { googleId: _g, password: _p, ...publicUser } = user;
   return publicUser;
 }
 

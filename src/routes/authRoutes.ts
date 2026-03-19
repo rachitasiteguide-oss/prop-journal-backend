@@ -1,6 +1,6 @@
 import { Router } from 'express';
 import passport from 'passport';
-import { googleCallback, logout, me } from '../controllers/authController';
+import { googleCallback, logout, me, register, login } from '../controllers/authController';
 import { requireAuth } from '../middlewares/authMiddleware';
 
 const router = Router();
@@ -28,6 +28,10 @@ router.get('/failure', (_req, res) => {
 
 // Get current user (protected)
 router.get('/me', requireAuth, me);
+
+// Email/password auth
+router.post('/register', register);
+router.post('/login', login);
 
 // Logout
 router.post('/logout', logout);
