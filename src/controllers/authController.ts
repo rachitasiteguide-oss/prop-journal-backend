@@ -26,8 +26,11 @@ export async function googleCallback(
     // req.user is set by Passport after Google OAuth
     const user = req.user as unknown as User;
     const token = signToken({ userId: user.id, email: user.email });
-    setAuthCookie(res, token);
-    res.redirect(`${env.CLIENT_URL}/dashboard`);
+    // Redirect to the frontend cookie-setter route.
+    // The backend and frontend are on different domains so we cannot set
+    // the cookie here — the frontend's /api/auth/callback route sets it on
+    // its own domain, then redirects the user to /dashboard.
+    res.redirect(`${env.CLIENT_URL}/api/auth/callback?token=${token}`);
   } catch (error) {
     next(error);
   }
