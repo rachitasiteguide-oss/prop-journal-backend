@@ -13,12 +13,12 @@ datasource db {
 // ── User ─────────────────────────────────────────────────────────────────────
 
 model User {
-  id        String   @id @default(cuid())
-  email     String   @unique
+  id        String  @id @default(cuid())
+  email     String  @unique
   name      String?
   avatar    String?
-  googleId  String?  @unique
-  password  String?  // null for Google-only users
+  googleId  String? @unique
+  password  String? // null for Google-only users
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -53,7 +53,9 @@ model Account {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  trades Trade[]
+  trades     Trade[]
+  importJobs ImportJob[]
+  snapshots  DailySnapshot[]
 
   @@index([userId])
   @@map("accounts")
@@ -71,34 +73,141 @@ enum TradeStatus {
   CLOSED
 }
 
+// Asset class — used for instrument-specific P&L normalisation and
+// broker field mapping (e.g. lot sizes differ between FOREX and FUTURES).
+enum InstrumentType {
+  FOREX
+  FUTURES
+  STOCKS
+  CRYPTO
+  CFD
+  OPTIONS
+}
+
 model Trade {
-  id        String @id @default(cuid())
+  id        String  @id @default(cuid())
   accountId String
   account   Account @relation(fields: [accountId], references: [id], onDelete: Cascade)
 
-  symbol     String
-  side       TradeSide
-  entryPrice Float
-  exitPrice  Float?
-  volume     Float       // lot size
-  pnl        Float?      // realized profit/loss in account currency
-  commission Float?      @default(0)
-  swap       Float?      @default(0)
+  // ── Core execution ──────────────────────────────────────────────────────
+  symbol         String
+  instrumentType InstrumentType @default(FOREX)
+  side           TradeSide
+  entryPrice     Float
+  exitPrice      Float?
+  volume         Float          // lot size / quantity / contracts
+  pnl            Float?         // realized P&L in account currency
+  commission     Float?         @default(0)
+  swap           Float?         @default(0)
 
+  // ── Risk management ─────────────────────────────────────────────────────
+  // Planned prices set before entry; used to compute R-multiple post-trade.
+  // R = pnl / (abs(entryPrice - stopLoss) * volume)
+  stopLoss   Float?
+  takeProfit Float?
+
+  // ── Strategy ────────────────────────────────────────────────────────────
+  setup String? // named strategy, e.g. "Break & Retest", "Fair Value Gap"
+  notes String?
+  tags  String[] @default([])
+
+  // ── Lifecycle ───────────────────────────────────────────────────────────
   status  TradeStatus @default(OPEN)
   entryAt DateTime
   exitAt  DateTime?
 
-  notes    String?
-  tags     String[]    @default([])
+  // ── Ingestion ────────────────────────────────────────────────────────────
+  // Broker-assigned trade ID; used as a deduplication key during CSV/API
+  // imports so re-uploading the same file never creates duplicate rows.
+  externalId  String?    // broker trade ID
+  importJobId String?
+  importJob   ImportJob? @relation(fields: [importJobId], references: [id])
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
+  // Composite unique: one external ID per account (NULLs are always distinct
+  // in PostgreSQL so manually-entered trades are unaffected).
+  @@unique([accountId, externalId])
   @@index([accountId])
   @@index([status])
   @@index([entryAt])
+  @@index([importJobId])
   @@map("trades")
+}
+
+// ── ImportJob ─────────────────────────────────────────────────────────────────
+// Tracks a single CSV upload or broker API sync attempt.
+// Gives users an audit trail and lets the UI show progress / errors.
+
+enum ImportJobStatus {
+  PENDING     // queued, not yet started
+  PROCESSING  // actively parsing / inserting
+  COMPLETED   // all rows inserted successfully
+  PARTIAL     // some rows inserted; errors logged for the rest
+  FAILED      // fatal error; no rows inserted
+}
+
+model ImportJob {
+  id        String @id @default(cuid())
+  accountId String
+  account   Account @relation(fields: [accountId], references: [id], onDelete: Cascade)
+
+  // Which broker format / ingestion source.
+  // e.g. "mt4", "mt5", "tradovate", "ninjatrader", "ibkr", "csv_generic"
+  source   String
+  fileName String? // original filename (CSV uploads only)
+
+  status       ImportJobStatus @default(PENDING)
+  rowsTotal    Int?            // null until file is parsed
+  rowsImported Int             @default(0)
+
+  // Structured error log: [{ row: number, message: string }]
+  // Stored as JSON so we can surface per-row failures without extra tables.
+  errors Json?
+
+  startedAt  DateTime  @default(now())
+  finishedAt DateTime?
+
+  trades Trade[]
+
+  @@index([accountId])
+  @@index([status])
+  @@map("import_jobs")
+}
+
+// ── DailySnapshot ─────────────────────────────────────────────────────────────
+// End-of-day equity record per account.
+// Source of truth for:
+//   - Equity curves
+//   - Daily drawdown calculation (prop firm challenge compliance)
+//   - Historical P&L aggregation without re-scanning every trade
+//
+// One row per (account, calendar date). Created/updated when a trading day closes
+// or on demand via a recalculation job.
+
+model DailySnapshot {
+  id        String  @id @default(cuid())
+  accountId String
+  account   Account @relation(fields: [accountId], references: [id], onDelete: Cascade)
+
+  date         DateTime @db.Date // calendar date; normalised to midnight UTC
+  openBalance  Float             // account balance at start of day
+  closeBalance Float             // account balance at end of day
+  pnl          Float             // realised P&L for the day (closeBalance - openBalance + deposits - withdrawals)
+  commissions  Float    @default(0) // total commissions paid that day
+  tradeCount   Int      @default(0) // number of closed trades
+
+  // Daily drawdown as a decimal fraction (0.05 = 5% drawdown).
+  // Calculation: (openBalance - min_intraday_equity) / openBalance
+  drawdown Float @default(0)
+
+  createdAt DateTime @default(now())
+
+  // One snapshot per account per day; safe to upsert.
+  @@unique([accountId, date])
+  @@index([accountId])
+  @@map("daily_snapshots")
 }
 
 // ── Challenge ─────────────────────────────────────────────────────────────────
@@ -123,14 +232,14 @@ model Challenge {
   user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   firmName    String
-  phase       ChallengePhase  @default(PHASE_1)
-  accountSize Float           // e.g. 100000 for $100k account
-  currency    String          @default("USD")
+  phase       ChallengePhase @default(PHASE_1)
+  accountSize Float          // e.g. 100000 for $100k account
+  currency    String         @default("USD")
 
   // Rules
-  profitTarget  Float  // e.g. 0.10 = 10%
-  maxDrawdown   Float  // e.g. 0.10 = 10% (overall)
-  dailyDrawdown Float  // e.g. 0.05 = 5% (daily)
+  profitTarget   Float // e.g. 0.10 = 10%
+  maxDrawdown    Float // e.g. 0.10 = 10% (overall)
+  dailyDrawdown  Float // e.g. 0.05 = 5% (daily)
   minTradingDays Int   @default(0)
 
   startDate DateTime
