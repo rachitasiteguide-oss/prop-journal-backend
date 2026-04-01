@@ -23,8 +23,10 @@ model User {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  accounts   Account[]
-  challenges Challenge[]
+  accounts    Account[]
+  challenges  Challenge[]
+  noteFolders NoteFolder[]
+  notes       Note[]
 
   @@map("users")
 }
@@ -225,6 +227,57 @@ enum ChallengeStatus {
   FAILED
   WITHDRAWN
 }
+
+// ── Notebook ──────────────────────────────────────────────────────────────────
+
+enum NoteType {
+  NOTE
+  TRADE_IDEA
+  MARKET_ANALYSIS
+  WEEKLY_REVIEW
+  STRATEGY
+}
+
+enum NoteStatus {
+  ACTIVE
+  ARCHIVED
+}
+
+model NoteFolder {
+  id        String   @id @default(cuid())
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  name      String
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  notes     Note[]
+
+  @@index([userId])
+  @@map("note_folders")
+}
+
+model Note {
+  id       String  @id @default(cuid())
+  userId   String
+  user     User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+  folderId String?
+  folder   NoteFolder? @relation(fields: [folderId], references: [id], onDelete: SetNull)
+
+  title   String
+  content String     @default("")
+  type    NoteType   @default(NOTE)
+  status  NoteStatus @default(ACTIVE)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([userId])
+  @@index([folderId])
+  @@map("notes")
+}
+
+// ── Challenge ─────────────────────────────────────────────────────────────────
+// Tracks a prop firm evaluation challenge
 
 model Challenge {
   id     String @id @default(cuid())
