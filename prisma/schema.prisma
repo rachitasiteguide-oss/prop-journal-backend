@@ -27,6 +27,7 @@ model User {
   challenges  Challenge[]
   noteFolders NoteFolder[]
   notes       Note[]
+  strategies  Strategy[]
 
   @@map("users")
 }
@@ -274,6 +275,26 @@ model Note {
   @@index([userId])
   @@index([folderId])
   @@map("notes")
+}
+
+// ── Strategy ──────────────────────────────────────────────────────────────────
+// A named trading strategy/setup. Trades are linked by matching trade.setup === strategy.name.
+
+model Strategy {
+  id          String   @id @default(cuid())
+  userId      String
+  user        User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  name        String
+  description String?
+  color       String   @default("#6366f1")
+  isDefault   Boolean  @default(false)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([userId])
+  @@map("strategies")
 }
 
 // ── Challenge ─────────────────────────────────────────────────────────────────
