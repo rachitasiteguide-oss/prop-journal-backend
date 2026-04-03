@@ -5,6 +5,8 @@ import accountRoutes from './accountRoutes';
 import tradeRoutes from './tradeRoutes';
 import notebookRoutes from './notebookRoutes';
 import strategyRoutes from './strategyRoutes';
+import leaderboardRoutes from './leaderboardRoutes';
+import routineRoutes from './routineRoutes';
 
 const router = Router();
 
@@ -18,5 +20,7 @@ router.use('/accounts', accountRoutes);
 router.use('/trades', tradeRoutes);
 router.use('/notebook', notebookRoutes);
 router.use('/strategies', strategyRoutes);
+router.use('/leaderboard', leaderboardRoutes);
+router.use('/routines', routineRoutes);
 
 export default router;

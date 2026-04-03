@@ -23,11 +23,20 @@ model User {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
+  showOnLeaderboard Boolean @default(false)
+
+  bio          String?
+  phone        String?
+  country      String?
+  timezone     String?   @default("UTC")
+  referralCode String?   @unique
+
   accounts    Account[]
   challenges  Challenge[]
   noteFolders NoteFolder[]
   notes       Note[]
   strategies  Strategy[]
+  routines    Routine[]
 
   @@map("users")
 }
@@ -328,4 +337,80 @@ model Challenge {
   @@index([userId])
   @@index([status])
   @@map("challenges")
+}
+
+// ── Routines ──────────────────────────────────────────────────────────────────
+// Daily trading checklists (Pre-Market, During Trade, Post-Market, Custom)
+
+enum RoutineType {
+  PRE_MARKET
+  DURING_TRADE
+  POST_MARKET
+  CUSTOM
+}
+
+model Routine {
+  id     String @id @default(cuid())
+  userId String
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  name        String
+  routineType RoutineType @default(CUSTOM)
+  isDefault   Boolean     @default(false) // system-seeded defaults
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  items       RoutineItem[]
+  completions RoutineCompletion[]
+
+  @@index([userId])
+  @@map("routines")
+}
+
+model RoutineItem {
+  id        String  @id @default(cuid())
+  routineId String
+  routine   Routine @relation(fields: [routineId], references: [id], onDelete: Cascade)
+
+  text     String
+  position Int    @default(0) // display order
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  completions RoutineItemCompletion[]
+
+  @@index([routineId])
+  @@map("routine_items")
+}
+
+// One record per (item, date) — toggled on/off each day
+model RoutineItemCompletion {
+  id            String      @id @default(cuid())
+  routineItemId String
+  routineItem   RoutineItem @relation(fields: [routineItemId], references: [id], onDelete: Cascade)
+
+  date      DateTime @db.Date // calendar date normalised to midnight UTC
+  completed Boolean  @default(true)
+
+  @@unique([routineItemId, date])
+  @@index([routineItemId])
+  @@map("routine_item_completions")
+}
+
+// Aggregate per (routine, date) — tracks streak
+model RoutineCompletion {
+  id        String  @id @default(cuid())
+  routineId String
+  routine   Routine @relation(fields: [routineId], references: [id], onDelete: Cascade)
+
+  date           DateTime @db.Date
+  totalItems     Int
+  completedItems Int
+  allDone        Boolean  @default(false)
+
+  @@unique([routineId, date])
+  @@index([routineId])
+  @@map("routine_completions")
 }
