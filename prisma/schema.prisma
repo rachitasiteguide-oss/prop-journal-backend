@@ -31,12 +31,13 @@ model User {
   timezone     String?   @default("UTC")
   referralCode String?   @unique
 
-  accounts    Account[]
-  challenges  Challenge[]
-  noteFolders NoteFolder[]
-  notes       Note[]
-  strategies  Strategy[]
-  routines    Routine[]
+  accounts         Account[]
+  challenges       Challenge[]
+  noteFolders      NoteFolder[]
+  notes            Note[]
+  strategies       Strategy[]
+  routines         Routine[]
+  backtestSessions BacktestSession[]
 
   @@map("users")
 }
@@ -413,4 +414,62 @@ model RoutineCompletion {
   @@unique([routineId, date])
   @@index([routineId])
   @@map("routine_completions")
+}
+
+// ── Backtesting ────────────────────────────────────────────────────────────────
+
+enum BacktestStatus {
+  ACTIVE
+  COMPLETED
+  PAUSED
+}
+
+model BacktestSession {
+  id              String        @id @default(cuid())
+  userId          String
+  user            User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  name            String
+  symbol          String
+  instrumentType  String        @default("FOREX")
+  startDate       DateTime
+  endDate         DateTime
+  startingBalance Float         @default(10000)
+  currentBalance  Float         @default(10000)
+  notes           String?
+  status          BacktestStatus @default(ACTIVE)
+
+  createdAt       DateTime      @default(now())
+  updatedAt       DateTime      @updatedAt
+
+  trades          BacktestTrade[]
+
+  @@index([userId])
+  @@map("backtest_sessions")
+}
+
+model BacktestTrade {
+  id          String          @id @default(cuid())
+  sessionId   String
+  session     BacktestSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+
+  symbol      String
+  side        TradeSide
+  entryPrice  Float
+  exitPrice   Float?
+  volume      Float           @default(1)
+  stopLoss    Float?
+  takeProfit  Float?
+  pnl         Float?
+  pnlPct      Float?
+  status      TradeStatus     @default(OPEN)
+  entryAt     DateTime
+  exitAt      DateTime?
+  notes       String?
+
+  createdAt   DateTime        @default(now())
+  updatedAt   DateTime        @updatedAt
+
+  @@index([sessionId])
+  @@map("backtest_trades")
 }
