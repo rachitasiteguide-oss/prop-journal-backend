@@ -35,40 +35,36 @@ export async function syncAccount(
   try {
     let syncedTrades = 0;
 
-    if (account.accountType === 'DEMO') {
-      // ── 3a. Mock sync ─────────────────────────────────────────────────────
-      const mockTrades = generateMockTrades(mode);
+    // ── 3. Mock MT5 sync (runs for all account types until real MetaAPI is wired) ──
+    // TODO: when account.accountType === 'LIVE' and MetaAPI credentials exist, call
+    //       the real MetaAPI client here instead of the mock generator.
+    const mockTrades = generateMockTrades(mode);
 
-      const result = await prisma.trade.createMany({
-        data: mockTrades.map((t) => ({
-          accountId,
-          importJobId: job.id,
-          symbol: t.symbol,
-          instrumentType: t.instrumentType,
-          side: t.side,
-          entryPrice: t.entryPrice,
-          exitPrice: t.exitPrice,
-          volume: t.volume,
-          pnl: t.pnl,
-          commission: t.commission,
-          swap: t.swap,
-          stopLoss: t.stopLoss,
-          takeProfit: t.takeProfit,
-          setup: t.setup,
-          status: t.status,
-          entryAt: t.entryAt,
-          exitAt: t.exitAt,
-          externalId: t.externalId,
-        })),
-        skipDuplicates: true, // deduplicate by (accountId, externalId)
-      });
+    const result = await prisma.trade.createMany({
+      data: mockTrades.map((t) => ({
+        accountId,
+        importJobId: job.id,
+        symbol: t.symbol,
+        instrumentType: t.instrumentType,
+        side: t.side,
+        entryPrice: t.entryPrice,
+        exitPrice: t.exitPrice,
+        volume: t.volume,
+        pnl: t.pnl,
+        commission: t.commission,
+        swap: t.swap,
+        stopLoss: t.stopLoss,
+        takeProfit: t.takeProfit,
+        setup: t.setup,
+        status: t.status,
+        entryAt: t.entryAt,
+        exitAt: t.exitAt,
+        externalId: t.externalId,
+      })),
+      skipDuplicates: true, // deduplicate by (accountId, externalId)
+    });
 
-      syncedTrades = result.count;
-    } else {
-      // ── 3b. Real MetaAPI placeholder ──────────────────────────────────────
-      // TODO: implement real MetaAPI broker sync here
-      syncedTrades = 0;
-    }
+    syncedTrades = result.count;
 
     // ── 4. Mark job COMPLETED ─────────────────────────────────────────────
     await prisma.importJob.update({

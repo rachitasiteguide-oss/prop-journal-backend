@@ -66,16 +66,16 @@ export async function createTrade(userId: string, data: CreateTradeInput) {
   return prisma.trade.create({ data });
 }
 
-export async function getTrades(userId: string, accountId?: string) {
-  // Build account filter — if accountId given, verify ownership first
-  if (accountId) {
-    await verifyAccountOwnership(userId, accountId);
-  }
+export async function getTrades(userId: string, accountIds?: string[]) {
+  // Security: ownership is enforced implicitly — Prisma's `account: { userId }`
+  // filter ensures only the requesting user's trades are returned regardless of
+  // which accountIds are supplied. No separate ownership loop needed.
+  const hasFilter = accountIds && accountIds.length > 0;
 
   return prisma.trade.findMany({
     where: {
       account: { userId },
-      ...(accountId ? { accountId } : {}),
+      ...(hasFilter ? { accountId: { in: accountIds } } : {}),
     },
     orderBy: { entryAt: 'desc' },
     include: { account: { select: { id: true, name: true } } },

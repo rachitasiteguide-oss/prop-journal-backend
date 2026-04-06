@@ -52,9 +52,25 @@ export async function getTradesHandler(
   next: NextFunction,
 ): Promise<void> {
   try {
-    const accountId =
-      typeof req.query.accountId === 'string' ? req.query.accountId : undefined;
-    const trades = await getTrades(req.currentUser!.userId, accountId);
+    // Accept either:
+    //   ?accountIds=id1,id2,id3          (comma-separated — preferred)
+    //   ?accountIds[]=id1&accountIds[]=id2  (array notation)
+    //   ?accountId=id1                   (legacy single-account param)
+    const raw = req.query.accountIds;
+    let accountIds: string[] | undefined;
+
+    if (typeof raw === 'string' && raw.trim().length > 0) {
+      accountIds = raw.split(',').map((s) => s.trim()).filter(Boolean);
+    } else if (Array.isArray(raw)) {
+      accountIds = (raw as string[]).map((s) => s.trim()).filter(Boolean);
+    } else {
+      // Backward-compat: single ?accountId param
+      const single =
+        typeof req.query.accountId === 'string' ? req.query.accountId.trim() : undefined;
+      if (single) accountIds = [single];
+    }
+
+    const trades = await getTrades(req.currentUser!.userId, accountIds);
     res.json({ status: 'success', data: trades });
   } catch (error) {
     next(error);
