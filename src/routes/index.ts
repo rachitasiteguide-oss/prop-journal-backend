@@ -9,6 +9,7 @@ import leaderboardRoutes from './leaderboardRoutes';
 import routineRoutes from './routineRoutes';
 import backtestRoutes from './backtestRoutes';
 import syncRoutes from './syncRoutes';
+import connectRoutes from './connectRoutes';
 
 const router = Router();
 
@@ -18,6 +19,8 @@ router.get('/health', (_req, res) => {
 
 router.use('/auth', authRoutes);
 router.use('/users', userRoutes);
+// Specific sub-paths first — prevents "connect" being captured as :accountId
+router.use('/accounts/connect', connectRoutes);
 router.use('/accounts', accountRoutes);
 router.use('/accounts/:accountId/sync', syncRoutes);
 router.use('/trades', tradeRoutes);
