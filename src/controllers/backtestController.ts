@@ -100,6 +100,26 @@ export async function addTradeHandler(req: Request, res: Response, next: NextFun
   } catch (e) { next(e); }
 }
 
+const bulkAddTradesSchema = z.object({
+  trades: z.array(addTradeSchema).min(1).max(500),
+});
+
+export async function bulkAddTradesHandler(req: Request, res: Response, next: NextFunction): Promise<void> {
+  try {
+    const { trades } = bulkAddTradesSchema.parse(req.body);
+    const data = await svc.bulkAddTrades(
+      req.currentUser!.userId,
+      String(req.params.id),
+      trades.map(t => ({
+        ...t,
+        entryAt: new Date(t.entryAt),
+        exitAt: t.exitAt ? new Date(t.exitAt) : undefined,
+      })),
+    );
+    res.status(201).json({ status: 'success', data });
+  } catch (e) { next(e); }
+}
+
 export async function updateTradeHandler(req: Request, res: Response, next: NextFunction): Promise<void> {
   try {
     const body = updateTradeSchema.parse(req.body);

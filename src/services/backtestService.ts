@@ -143,6 +143,62 @@ export async function updateTrade(userId: string, sessionId: string, tradeId: st
   });
 }
 
+export async function bulkAddTrades(userId: string, sessionId: string, trades: Array<{
+  symbol: string; side: TradeSide; entryPrice: number; exitPrice?: number;
+  volume?: number; stopLoss?: number; takeProfit?: number; entryAt: Date;
+  exitAt?: Date; notes?: string;
+}>) {
+  const session = await prisma.backtestSession.findFirst({ where: { id: sessionId, userId } });
+  if (!session) throw new AppError('Session not found', 404);
+
+  let balanceDelta = 0;
+  const created = [];
+
+  for (const data of trades) {
+    let pnl: number | null = null;
+    let pnlPct: number | null = null;
+    let status: TradeStatus = 'OPEN';
+
+    if (data.exitPrice != null && data.exitPrice > 0) {
+      const direction = data.side === 'BUY' ? 1 : -1;
+      const priceDiff = (data.exitPrice - data.entryPrice) * direction;
+      pnl = parseFloat((priceDiff * (data.volume ?? 1) * 100000 * 10 / 100000).toFixed(2));
+      pnlPct = parseFloat(((pnl / session.startingBalance) * 100).toFixed(4));
+      status = 'CLOSED';
+      balanceDelta += pnl;
+    }
+
+    const trade = await prisma.backtestTrade.create({
+      data: {
+        sessionId,
+        symbol: data.symbol,
+        side: data.side,
+        entryPrice: data.entryPrice,
+        exitPrice: data.exitPrice ?? null,
+        volume: data.volume ?? 1,
+        stopLoss: data.stopLoss ?? null,
+        takeProfit: data.takeProfit ?? null,
+        pnl,
+        pnlPct,
+        status,
+        entryAt: data.entryAt,
+        exitAt: data.exitAt ?? null,
+        notes: data.notes ?? null,
+      },
+    });
+    created.push(trade);
+  }
+
+  if (balanceDelta !== 0) {
+    await prisma.backtestSession.update({
+      where: { id: sessionId },
+      data: { currentBalance: { increment: balanceDelta } },
+    });
+  }
+
+  return created;
+}
+
 export async function deleteTrade(userId: string, sessionId: string, tradeId: string) {
   const session = await prisma.backtestSession.findFirst({ where: { id: sessionId, userId } });
   if (!session) throw new AppError('Session not found', 404);

@@ -7,7 +7,6 @@
     "build": "prisma generate && tsc --project tsconfig.json",
     "start": "node dist/index.js",
     "postinstall": "prisma generate",
-
     "db:generate": "prisma generate",
     "db:migrate": "prisma migrate dev",
     "db:migrate:prod": "prisma migrate deploy",
@@ -39,9 +38,13 @@
     "@types/node": "^22.9.0",
     "@types/passport": "^1.0.16",
     "@types/passport-google-oauth20": "^2.0.16",
+    "@types/supertest": "^7.2.0",
+    "@vitest/coverage-v8": "^4.1.4",
     "nodemon": "^3.1.7",
     "prisma": "^5.22.0",
+    "supertest": "^7.2.2",
     "ts-node": "^10.9.2",
-    "typescript": "^5.6.3"
+    "typescript": "^5.6.3",
+    "vitest": "^4.1.4"
   }
 }
