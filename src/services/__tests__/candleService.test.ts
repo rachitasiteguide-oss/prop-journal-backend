@@ -49,6 +49,14 @@ describe('normalizeYFSymbol', () => {
 // ── fetchAndCacheCandles — input validation ───────────────────────────────────
 
 describe('fetchAndCacheCandles — validation', () => {
+  it('throws AppError 400 when start date is not before end date', async () => {
+    const from = new Date('2023-06-01');
+    const to   = new Date('2023-01-01'); // inverted
+    await expect(
+      fetchAndCacheCandles('AAPL', 'STOCKS', 'D1', from, to),
+    ).rejects.toMatchObject({ statusCode: 400 });
+  });
+
   it('throws AppError 400 for an unsupported timeframe (e.g. M5)', async () => {
     const from = new Date('2023-01-01');
     const to   = new Date('2023-06-01');

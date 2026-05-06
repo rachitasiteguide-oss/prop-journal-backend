@@ -116,6 +116,10 @@ export async function fetchAndCacheCandles(
     );
   }
 
+  if (from >= to) {
+    throw new AppError('Start date must be before end date.', 400);
+  }
+
   // Guard intraday range limits
   const maxDays = TIMEFRAME_MAX_DAYS[timeframe] ?? 730;
   const rangeDays = (to.getTime() - from.getTime()) / (1000 * 60 * 60 * 24);
