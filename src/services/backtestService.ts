@@ -1,6 +1,9 @@
 import { prisma } from '../config/db';
 import { AppError } from '../middlewares/errorHandler';
-import { BacktestStatus, TradeSide, TradeStatus } from '@prisma/client';
+import { BacktestStatus, TradeSide, TradeStatus, Prisma } from '@prisma/client';
+import { runAutomatedBacktest, type EngineConfig } from './backtestEngine';
+import { type StrategyType } from './strategyDefinitions';
+import { getCachedCandles } from './candleService';
 
 // ── Sessions ──────────────────────────────────────────────────────────────────
 
@@ -24,18 +27,27 @@ export async function getSession(userId: string, id: string) {
 export async function createSession(userId: string, data: {
   name: string; symbol: string; instrumentType?: string;
   startDate: Date; endDate: Date; startingBalance?: number; notes?: string;
+  mode?: 'MANUAL' | 'AUTO';
+  timeframe?: string;
+  strategyType?: string;
+  strategyConfig?: Record<string, unknown>;
 }) {
+  const balance = data.startingBalance ?? 10000;
   return prisma.backtestSession.create({
     data: {
       userId,
-      name: data.name,
-      symbol: data.symbol,
-      instrumentType: data.instrumentType ?? 'FOREX',
-      startDate: data.startDate,
-      endDate: data.endDate,
-      startingBalance: data.startingBalance ?? 10000,
-      currentBalance: data.startingBalance ?? 10000,
-      notes: data.notes ?? null,
+      name:            data.name,
+      symbol:          data.symbol,
+      instrumentType:  data.instrumentType ?? 'FOREX',
+      startDate:       data.startDate,
+      endDate:         data.endDate,
+      startingBalance: balance,
+      currentBalance:  balance,
+      notes:           data.notes ?? null,
+      mode:            data.mode ?? 'MANUAL',
+      timeframe:       data.timeframe ?? null,
+      strategyType:    data.strategyType ?? null,
+      strategyConfig:  data.strategyConfig as Prisma.InputJsonValue | undefined,
     },
     include: { trades: true },
   });
@@ -320,4 +332,90 @@ export async function getSessionAnalytics(userId: string, sessionId: string) {
     bySide,
     byMonth,
   };
+}
+
+// ── Automated run functions ───────────────────────────────────────────────────
+
+// Stores run config on the session, then executes the backtest synchronously.
+// For MVP the HTTP request waits for completion (controller should allow 120 s).
+export async function triggerRun(
+  userId: string,
+  sessionId: string,
+  params: {
+    timeframe:       string;
+    strategyType:    StrategyType;
+    strategyConfig:  Record<string, number | string>;
+    volume:          number;
+    stopLossPct:     number;
+    takeProfitRatio: number;
+    slippagePct:     number;
+    commission:      number;
+    maxOpenPositions: number;
+  },
+): Promise<void> {
+  const session = await prisma.backtestSession.findFirst({ where: { id: sessionId, userId } });
+  if (!session) throw new AppError('Session not found', 404);
+
+  // Persist the run config on the session before execution starts.
+  // Merge slippage/commission/sizing into the JSON blob so the frontend
+  // bias banner can read them from session.strategyConfig.
+  await prisma.backtestSession.update({
+    where: { id: sessionId },
+    data: {
+      timeframe:      params.timeframe,
+      strategyType:   params.strategyType,
+      strategyConfig: {
+        ...params.strategyConfig,
+        slippagePct:     params.slippagePct,
+        commission:      params.commission,
+        volume:          params.volume,
+        stopLossPct:     params.stopLossPct,
+        takeProfitRatio: params.takeProfitRatio,
+      } as Prisma.InputJsonValue,
+    },
+  });
+
+  const config: EngineConfig = {
+    strategyType:     params.strategyType,
+    strategyConfig:   params.strategyConfig,
+    startingBalance:  session.startingBalance,
+    volume:           params.volume,
+    stopLossPct:      params.stopLossPct,
+    takeProfitRatio:  params.takeProfitRatio,
+    slippagePct:      params.slippagePct,
+    commission:       params.commission,
+    maxOpenPositions: params.maxOpenPositions,
+    instrumentType:   session.instrumentType,
+  };
+
+  await runAutomatedBacktest(userId, sessionId, config);
+}
+
+export async function getRunStatus(
+  userId: string,
+  sessionId: string,
+): Promise<{ runStatus: string; runProgress: number; runError: string | null }> {
+  const session = await prisma.backtestSession.findFirst({
+    where: { id: sessionId, userId },
+    select: { runStatus: true, runProgress: true, runError: true },
+  });
+  if (!session) throw new AppError('Session not found', 404);
+  return {
+    runStatus:   session.runStatus,
+    runProgress: session.runProgress,
+    runError:    session.runError,
+  };
+}
+
+// Returns candles from the local cache for the session's symbol/timeframe/range.
+// Only populated after a successful run — returns [] if the session was never run.
+export async function getSessionCandles(userId: string, sessionId: string) {
+  const session = await prisma.backtestSession.findFirst({
+    where: { id: sessionId, userId },
+    select: { symbol: true, timeframe: true, startDate: true, endDate: true },
+  });
+  if (!session) throw new AppError('Session not found', 404);
+  if (!session.timeframe) return [];
+
+  return getCachedCandles(session.symbol, session.timeframe, session.startDate, session.endDate);
 }
