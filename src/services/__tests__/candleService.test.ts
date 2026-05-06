@@ -57,6 +57,14 @@ describe('fetchAndCacheCandles — validation', () => {
     ).rejects.toMatchObject({ statusCode: 400 });
   });
 
+  it('throws AppError 400 when end date is in the future', async () => {
+    const from = new Date('2023-01-01');
+    const to   = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000); // 7 days from now
+    await expect(
+      fetchAndCacheCandles('AAPL', 'STOCKS', 'D1', from, to),
+    ).rejects.toMatchObject({ statusCode: 400 });
+  });
+
   it('throws AppError 400 for an unsupported timeframe (e.g. M5)', async () => {
     const from = new Date('2023-01-01');
     const to   = new Date('2023-06-01');

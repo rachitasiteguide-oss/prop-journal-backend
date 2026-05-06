@@ -120,6 +120,13 @@ export async function fetchAndCacheCandles(
     throw new AppError('Start date must be before end date.', 400);
   }
 
+  if (to > new Date()) {
+    throw new AppError(
+      'End date cannot be in the future. Use a historical date range for backtesting.',
+      400,
+    );
+  }
+
   // Guard intraday range limits
   const maxDays = TIMEFRAME_MAX_DAYS[timeframe] ?? 730;
   const rangeDays = (to.getTime() - from.getTime()) / (1000 * 60 * 60 * 24);
