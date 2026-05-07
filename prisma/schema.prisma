@@ -41,6 +41,7 @@ model User {
   strategies        Strategy[]
   routines          Routine[]
   backtestSessions  BacktestSession[]
+  savedStrategies   SavedStrategy[]
   passwordResetTokens PasswordResetToken[]
 
   @@map("users")
@@ -526,6 +527,24 @@ model BacktestTrade {
 
   @@index([sessionId])
   @@map("backtest_trades")
+}
+
+// ── Saved custom strategies ───────────────────────────────────────────────────
+// User-defined strategies built with the visual strategy builder.
+// The definition field stores a CustomStrategyDSL JSON object.
+
+model SavedStrategy {
+  id          String   @id @default(cuid())
+  userId      String
+  user        User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  name        String
+  description String?
+  definition  Json     // CustomStrategyDSL — indicators + buy/sell rule groups
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@index([userId])
+  @@map("saved_strategies")
 }
 
 // ── Market data cache ─────────────────────────────────────────────────────────

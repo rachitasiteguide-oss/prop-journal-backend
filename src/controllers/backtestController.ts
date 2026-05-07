@@ -157,17 +157,24 @@ export async function getStrategyCatalogHandler(_req: Request, res: Response, ne
 }
 
 // POST /api/v1/backtesting/sessions/:id/run
-// Validates body, stores config on the session, then executes the backtest.
-// For MVP this is synchronous — set a 120-second timeout on the client side.
+// Validates body, stores config on the session, then queues the backtest.
+// Returns 202 immediately — frontend polls /run/status for progress.
+const ALL_STRATEGY_TYPES = [
+  'MA_CROSS', 'RSI_REVERSAL', 'MACD_SIGNAL', 'BB_BREAKOUT',
+  'STOCHASTIC_CROSS', 'ADX_TREND', 'DONCHIAN_BREAKOUT',
+  'CCI_REVERSAL', 'WILLIAMS_R', 'RSI_MA_COMBO', 'CUSTOM',
+] as const;
+
 const runSchema = z.object({
   timeframe:        z.enum(['D1', 'W1', 'H1', 'M30', 'M15']),
-  strategyType:     z.enum(['MA_CROSS', 'RSI_REVERSAL', 'MACD_SIGNAL', 'BB_BREAKOUT']),
+  strategyType:     z.enum(ALL_STRATEGY_TYPES),
   strategyConfig:   z.record(z.union([z.number(), z.string()])),
+  customStrategy:   z.record(z.unknown()).optional(),
   volume:           z.number().positive().default(1),
   stopLossPct:      z.number().min(0.001).max(0.20).default(0.02),
   takeProfitRatio:  z.number().min(0.5).max(10).default(2),
-  slippagePct:      z.number().min(0).max(0.05).default(0),    // Rule 5
-  commission:       z.number().min(0).max(100).default(0),     // Rule 5
+  slippagePct:      z.number().min(0).max(0.05).default(0),
+  commission:       z.number().min(0).max(100).default(0),
   maxOpenPositions: z.number().int().min(1).max(5).default(1),
 });
 
@@ -175,7 +182,7 @@ export async function runSessionHandler(req: Request, res: Response, next: NextF
   try {
     const body = runSchema.parse(req.body);
     await svc.triggerRun(req.currentUser!.userId, String(req.params.id), body);
-    res.json({ status: 'success', message: 'Backtest completed' });
+    res.status(202).json({ status: 'success', message: 'Backtest queued' });
   } catch (e) { next(e); }
 }
 

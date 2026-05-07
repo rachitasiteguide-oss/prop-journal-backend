@@ -1,5 +1,6 @@
 import { prisma } from '../config/db';
 import { AppError } from '../middlewares/errorHandler';
+import { logger } from '../utils/logger';
 import { BacktestStatus, TradeSide, TradeStatus, Prisma } from '@prisma/client';
 import { runAutomatedBacktest, type EngineConfig } from './backtestEngine';
 import { type StrategyType } from './strategyDefinitions';
@@ -345,6 +346,7 @@ export async function triggerRun(
     timeframe:       string;
     strategyType:    StrategyType;
     strategyConfig:  Record<string, number | string>;
+    customStrategy?: Record<string, unknown>;
     volume:          number;
     stopLossPct:     number;
     takeProfitRatio: number;
@@ -378,6 +380,7 @@ export async function triggerRun(
   const config: EngineConfig = {
     strategyType:     params.strategyType,
     strategyConfig:   params.strategyConfig,
+    customStrategy:   params.customStrategy as import('./customStrategyInterpreter').CustomStrategyDSL | undefined,
     startingBalance:  session.startingBalance,
     volume:           params.volume,
     stopLossPct:      params.stopLossPct,
@@ -388,7 +391,13 @@ export async function triggerRun(
     instrumentType:   session.instrumentType,
   };
 
-  await runAutomatedBacktest(userId, sessionId, config);
+  // Fire-and-forget: return immediately so the HTTP request doesn't time out.
+  // runStatus / runProgress in the DB are updated by the engine; the frontend polls.
+  runAutomatedBacktest(userId, sessionId, config).catch((err) => {
+    logger.error(
+      `Background backtest ${sessionId} crashed: ${err instanceof Error ? err.message : String(err)}`,
+    );
+  });
 }
 
 export async function getRunStatus(

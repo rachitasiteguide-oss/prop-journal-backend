@@ -6,6 +6,10 @@ import {
   updateTradeHandler, deleteTradeHandler,
   getStrategyCatalogHandler, runSessionHandler, getRunStatusHandler, getSessionCandlesHandler,
 } from '../controllers/backtestController';
+import {
+  listSavedStrategiesHandler, getSavedStrategyHandler,
+  createSavedStrategyHandler, updateSavedStrategyHandler, deleteSavedStrategyHandler,
+} from '../controllers/savedStrategyController';
 
 const router = Router();
 router.use(requireAuth);
@@ -29,5 +33,12 @@ router.get('/strategies',              getStrategyCatalogHandler);
 router.post('/sessions/:id/run',       runSessionHandler);
 router.get('/sessions/:id/run/status', getRunStatusHandler);
 router.get('/sessions/:id/candles',    getSessionCandlesHandler);
+
+// ── Saved custom strategies ───────────────────────────────────────────────────
+router.get('/custom-strategies',          listSavedStrategiesHandler);
+router.post('/custom-strategies',         createSavedStrategyHandler);
+router.get('/custom-strategies/:id',      getSavedStrategyHandler);
+router.patch('/custom-strategies/:id',    updateSavedStrategyHandler);
+router.delete('/custom-strategies/:id',   deleteSavedStrategyHandler);
 
 export default router;

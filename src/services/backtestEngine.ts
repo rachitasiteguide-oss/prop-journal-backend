@@ -3,13 +3,18 @@ import { AppError } from '../middlewares/errorHandler';
 import { logger } from '../utils/logger';
 import { getCandles } from './candleService';
 import { type StrategyType } from './strategyDefinitions';
-import { calcSMA, calcEMA, calcRSI, calcMACD, calcBB } from './indicatorService';
+import {
+  calcSMA, calcEMA, calcRSI, calcMACD, calcBB,
+  calcStochastic, calcADX, calcDonchian, calcCCI, calcWilliamsR,
+} from './indicatorService';
+import { generateCustomSignals, type CustomStrategyDSL } from './customStrategyInterpreter';
 
 // ── Public config interface ───────────────────────────────────────────────────
 
 export interface EngineConfig {
   strategyType:     StrategyType;
   strategyConfig:   Record<string, number | string>;
+  customStrategy?:  CustomStrategyDSL;   // only used when strategyType === 'CUSTOM'
   startingBalance:  number;
   volume:           number;
   stopLossPct:      number;        // e.g. 0.02 = 2% from entry
@@ -121,8 +126,11 @@ function generateSignals(
   candles: Candle[],
   strategyType: StrategyType,
   strategyConfig: Record<string, number | string>,
+  customStrategy?: CustomStrategyDSL,
 ): Signal[] {
   const closes  = candles.map((c) => c.close);
+  const highs   = candles.map((c) => c.high);
+  const lows    = candles.map((c) => c.low);
   const signals: Signal[] = new Array(candles.length).fill(null);
 
   switch (strategyType) {
@@ -138,7 +146,6 @@ function generateSignals(
         const pf = fastMA[i - 1], cf = fastMA[i];
         const ps = slowMA[i - 1], cs = slowMA[i];
         if (pf === null || cf === null || ps === null || cs === null) continue;
-
         if (pf <= ps && cf > cs) { signals[i] = 'BUY';  continue; }
         if (pf >= ps && cf < cs) { signals[i] = 'SELL'; continue; }
       }
@@ -155,10 +162,7 @@ function generateSignals(
       for (let i = 1; i < candles.length; i++) {
         const prev = rsi[i - 1], curr = rsi[i];
         if (prev === null || curr === null) continue;
-
-        // BUY: RSI rises above oversold (recovery confirmation)
-        if (prev <= oversold && curr > oversold) { signals[i] = 'BUY';  continue; }
-        // SELL: RSI rises above overbought (short entry at overbought)
+        if (prev <= oversold   && curr > oversold)   { signals[i] = 'BUY';  continue; }
         if (prev <= overbought && curr > overbought) { signals[i] = 'SELL'; continue; }
       }
       break;
@@ -175,7 +179,6 @@ function generateSignals(
         const prev = macd[i - 1], curr = macd[i];
         if (prev.macd === null || curr.macd === null ||
             prev.signal === null || curr.signal === null) continue;
-
         if (prev.macd <= prev.signal && curr.macd > curr.signal) { signals[i] = 'BUY';  continue; }
         if (prev.macd >= prev.signal && curr.macd < curr.signal) { signals[i] = 'SELL'; continue; }
       }
@@ -185,16 +188,136 @@ function generateSignals(
     case 'BB_BREAKOUT': {
       const period = Number(strategyConfig.period ?? 20);
       const stdDev = Number(strategyConfig.stdDev ?? 2);
-
       const bb = calcBB(closes, period, stdDev);
 
       for (let i = 0; i < candles.length; i++) {
         const { upper, lower } = bb[i];
         if (upper === null || lower === null) continue;
-
         if (closes[i] > upper) { signals[i] = 'BUY';  continue; }
         if (closes[i] < lower) { signals[i] = 'SELL'; continue; }
       }
+      break;
+    }
+
+    case 'STOCHASTIC_CROSS': {
+      const period       = Number(strategyConfig.period       ?? 14);
+      const signalPeriod = Number(strategyConfig.signalPeriod ?? 3);
+      const oversold     = Number(strategyConfig.oversold     ?? 20);
+      const overbought   = Number(strategyConfig.overbought   ?? 80);
+
+      const stoch = calcStochastic(highs, lows, closes, period, signalPeriod);
+
+      for (let i = 1; i < candles.length; i++) {
+        const prev = stoch[i - 1], curr = stoch[i];
+        if (prev.k === null || curr.k === null || prev.d === null || curr.d === null) continue;
+        // BUY: %K crosses above %D while both below oversold zone
+        if (prev.k <= prev.d && curr.k > curr.d && curr.k < oversold) { signals[i] = 'BUY';  continue; }
+        // SELL: %K crosses below %D while both above overbought zone
+        if (prev.k >= prev.d && curr.k < curr.d && curr.k > overbought) { signals[i] = 'SELL'; continue; }
+      }
+      break;
+    }
+
+    case 'ADX_TREND': {
+      const period    = Number(strategyConfig.period    ?? 14);
+      const threshold = Number(strategyConfig.threshold ?? 25);
+
+      const adx = calcADX(highs, lows, closes, period);
+
+      for (let i = 1; i < candles.length; i++) {
+        const prev = adx[i - 1], curr = adx[i];
+        if (curr.adx === null || curr.pdi === null || curr.mdi === null) continue;
+        if (prev.pdi === null || prev.mdi === null) continue;
+        if (curr.adx < threshold) continue;  // only trade when trend is strong
+        // BUY: DI+ crosses above DI−
+        if (prev.pdi <= prev.mdi && curr.pdi > curr.mdi) { signals[i] = 'BUY';  continue; }
+        // SELL: DI− crosses above DI+
+        if (prev.pdi >= prev.mdi && curr.pdi < curr.mdi) { signals[i] = 'SELL'; continue; }
+      }
+      break;
+    }
+
+    case 'DONCHIAN_BREAKOUT': {
+      const period = Number(strategyConfig.period ?? 20);
+      const dc = calcDonchian(highs, lows, period);
+
+      for (let i = 1; i < candles.length; i++) {
+        const prev = dc[i - 1];
+        if (prev.upper === null || prev.lower === null) continue;
+        // BUY: close breaks above previous period's upper channel
+        if (closes[i] > prev.upper) { signals[i] = 'BUY';  continue; }
+        // SELL: close breaks below previous period's lower channel
+        if (closes[i] < prev.lower) { signals[i] = 'SELL'; continue; }
+      }
+      break;
+    }
+
+    case 'CCI_REVERSAL': {
+      const period     = Number(strategyConfig.period     ?? 20);
+      const oversold   = Number(strategyConfig.oversold   ?? -100);
+      const overbought = Number(strategyConfig.overbought ?? 100);
+
+      const cci = calcCCI(highs, lows, closes, period);
+
+      for (let i = 1; i < candles.length; i++) {
+        const prev = cci[i - 1], curr = cci[i];
+        if (prev === null || curr === null) continue;
+        // BUY: CCI crosses above oversold threshold (recovery)
+        if (prev <= oversold   && curr > oversold)   { signals[i] = 'BUY';  continue; }
+        // SELL: CCI crosses below overbought threshold
+        if (prev >= overbought && curr < overbought) { signals[i] = 'SELL'; continue; }
+      }
+      break;
+    }
+
+    case 'WILLIAMS_R': {
+      const period     = Number(strategyConfig.period     ?? 14);
+      const oversold   = Number(strategyConfig.oversold   ?? -80);
+      const overbought = Number(strategyConfig.overbought ?? -20);
+
+      const wr = calcWilliamsR(highs, lows, closes, period);
+
+      for (let i = 1; i < candles.length; i++) {
+        const prev = wr[i - 1], curr = wr[i];
+        if (prev === null || curr === null) continue;
+        // BUY: %R crosses above oversold level (e.g. -80 → -75)
+        if (prev <= oversold   && curr > oversold)   { signals[i] = 'BUY';  continue; }
+        // SELL: %R crosses below overbought level (e.g. -20 → -25)
+        if (prev >= overbought && curr < overbought) { signals[i] = 'SELL'; continue; }
+      }
+      break;
+    }
+
+    case 'RSI_MA_COMBO': {
+      const rsiPeriod  = Number(strategyConfig.rsiPeriod  ?? 14);
+      const oversold   = Number(strategyConfig.oversold   ?? 30);
+      const overbought = Number(strategyConfig.overbought ?? 70);
+      const maPeriod   = Number(strategyConfig.maPeriod   ?? 50);
+      const maType     = String(strategyConfig.maType     ?? 'EMA');
+
+      const rsi = calcRSI(closes, rsiPeriod);
+      const ma  = maType === 'SMA' ? calcSMA(closes, maPeriod) : calcEMA(closes, maPeriod);
+
+      for (let i = 1; i < candles.length; i++) {
+        const prevRsi = rsi[i - 1], currRsi = rsi[i];
+        const maVal   = ma[i];
+        if (prevRsi === null || currRsi === null || maVal === null) continue;
+        // BUY: RSI recovery from oversold AND price above trend MA
+        if (prevRsi <= oversold && currRsi > oversold && closes[i] > maVal) {
+          signals[i] = 'BUY'; continue;
+        }
+        // SELL: RSI enters overbought AND price below trend MA
+        if (prevRsi <= overbought && currRsi > overbought && closes[i] < maVal) {
+          signals[i] = 'SELL'; continue;
+        }
+      }
+      break;
+    }
+
+    case 'CUSTOM': {
+      if (!customStrategy) break;
+      const customSignals = generateCustomSignals(candles, customStrategy);
+      for (let i = 0; i < candles.length; i++) signals[i] = customSignals[i];
       break;
     }
   }
@@ -220,6 +343,23 @@ function minCandlesRequired(
     }
     case 'BB_BREAKOUT':
       return Number(strategyConfig.period ?? 20) + 1;
+    case 'STOCHASTIC_CROSS':
+      return Number(strategyConfig.period ?? 14) + Number(strategyConfig.signalPeriod ?? 3) + 1;
+    case 'ADX_TREND':
+      return Number(strategyConfig.period ?? 14) * 2 + 1;
+    case 'DONCHIAN_BREAKOUT':
+      return Number(strategyConfig.period ?? 20) + 1;
+    case 'CCI_REVERSAL':
+      return Number(strategyConfig.period ?? 20) + 1;
+    case 'WILLIAMS_R':
+      return Number(strategyConfig.period ?? 14) + 1;
+    case 'RSI_MA_COMBO':
+      return Math.max(
+        Number(strategyConfig.rsiPeriod ?? 14),
+        Number(strategyConfig.maPeriod  ?? 50),
+      ) + 2;
+    case 'CUSTOM':
+      return 30; // conservative default for custom strategies
   }
 }
 
@@ -407,7 +547,7 @@ export async function runAutomatedBacktest(
     }
 
     // 6. Compute strategy signals for every candle.
-    const signals = generateSignals(candles, config.strategyType, config.strategyConfig);
+    const signals = generateSignals(candles, config.strategyType, config.strategyConfig, config.customStrategy);
 
     // 7. Run the candle-by-candle event loop (exits first, then entries per Rule 1).
     const { closedTrades, finalBalance } = await runEventLoop(
