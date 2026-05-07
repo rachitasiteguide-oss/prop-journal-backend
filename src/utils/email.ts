@@ -1,20 +1,26 @@
 import { Resend } from 'resend';
+import nodemailer from 'nodemailer';
 import { env } from '../config/env';
 import { logger } from './logger';
 
+// ── Transport selection ───────────────────────────────────────────────────────
+// Priority: Resend (production) → Google SMTP (MVP) → console.log (dev)
+
 const resend = env.RESEND_API_KEY ? new Resend(env.RESEND_API_KEY) : null;
 
-export async function sendPasswordResetEmail(to: string, resetUrl: string): Promise<void> {
-  if (!resend) {
-    logger.info(`[DEV] Password reset link for ${to}: ${resetUrl}`);
-    return;
-  }
+const smtpTransport =
+  !resend && env.SMTP_USER && env.SMTP_PASS
+    ? nodemailer.createTransport({
+        host: 'smtp.gmail.com',
+        port: 465,
+        secure: true,
+        auth: { user: env.SMTP_USER, pass: env.SMTP_PASS },
+      })
+    : null;
 
-  const { error } = await resend.emails.send({
-    from: env.EMAIL_FROM,
-    to,
-    subject: 'Reset your Prop Journal password',
-    html: `
+// ── Email HTML template ───────────────────────────────────────────────────────
+function buildResetHtml(resetUrl: string): string {
+  return `
 <!DOCTYPE html>
 <html>
 <head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"></head>
@@ -54,12 +60,40 @@ export async function sendPasswordResetEmail(to: string, resetUrl: string): Prom
     </tr>
   </table>
 </body>
-</html>
-    `.trim(),
-  });
+</html>`.trim();
+}
 
-  if (error) {
-    logger.error(`Failed to send password reset email to ${to}: ${error.message}`);
-    throw new Error('Failed to send password reset email');
+// ── Sender ────────────────────────────────────────────────────────────────────
+export async function sendPasswordResetEmail(to: string, resetUrl: string): Promise<void> {
+  const html = buildResetHtml(resetUrl);
+  const subject = 'Reset your Prop Journal password';
+
+  // ── Path 1: Resend (production) ───────────────────────────────────────────
+  if (resend) {
+    const { error } = await resend.emails.send({
+      from: env.EMAIL_FROM,
+      to,
+      subject,
+      html,
+    });
+    if (error) {
+      logger.error(`Resend failed for ${to}: ${error.message}`);
+      throw new Error('Failed to send password reset email');
+    }
+    return;
   }
+
+  // ── Path 2: Google SMTP (MVP) ─────────────────────────────────────────────
+  if (smtpTransport) {
+    await smtpTransport.sendMail({
+      from: env.EMAIL_FROM,
+      to,
+      subject,
+      html,
+    });
+    return;
+  }
+
+  // ── Path 3: Dev fallback ──────────────────────────────────────────────────
+  logger.info(`[DEV] Password reset link for ${to}: ${resetUrl}`);
 }

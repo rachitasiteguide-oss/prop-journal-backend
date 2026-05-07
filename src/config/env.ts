@@ -19,6 +19,8 @@ const envSchema = z.object({
   CLIENT_URL: z.string().url('CLIENT_URL must be a valid URL').default('http://localhost:3000'),
 
   RESEND_API_KEY: z.string().optional(),
+  SMTP_USER: z.string().optional(),
+  SMTP_PASS: z.string().optional(),
   EMAIL_FROM: z.string().default('Prop Journal <noreply@propjournal.app>'),
 
   COOKIE_SECURE: z
