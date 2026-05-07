@@ -376,17 +376,16 @@ async function runEventLoop(
   const closedTrades: TradeResult[]   = [];
   let runningBalance = config.startingBalance;
 
-  // Update DB every ~10% of candles processed.
+  // Progress spans 15–100 (first 15% is reserved for data-fetch phase).
   const progressInterval = Math.max(1, Math.floor(candles.length / 10));
 
   for (let i = 0; i < candles.length; i++) {
     const candle = candles[i];
 
-    // Progress update
     if (i % progressInterval === 0) {
       await prisma.backtestSession.update({
         where: { id: sessionId },
-        data:  { runProgress: Math.floor((i / candles.length) * 100) },
+        data:  { runProgress: Math.floor(15 + (i / candles.length) * 85) },
       });
     }
 
@@ -527,6 +526,9 @@ export async function runAutomatedBacktest(
     await prisma.backtestTrade.deleteMany({ where: { sessionId } });
 
     // 4. Fetch (or serve from cache) candle data.
+    //    Signal 3% so the UI shows movement while Yahoo Finance fetches.
+    await prisma.backtestSession.update({ where: { id: sessionId }, data: { runProgress: 3 } });
+
     const candles = await getCandles(
       session.symbol,
       config.instrumentType,
@@ -534,6 +536,9 @@ export async function runAutomatedBacktest(
       session.startDate,
       session.endDate,
     ) as Candle[];
+
+    // Data fetched — signal 12% before the engine loop starts.
+    await prisma.backtestSession.update({ where: { id: sessionId }, data: { runProgress: 12 } });
 
     // 5. Validate enough candles for a meaningful run.
     const lookback = minCandlesRequired(config.strategyType, config.strategyConfig);
