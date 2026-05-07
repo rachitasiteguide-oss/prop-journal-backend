@@ -23,7 +23,8 @@ model User {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  showOnLeaderboard Boolean @default(false)
+  showOnLeaderboard    Boolean @default(false)
+  onboardingCompleted  Boolean @default(false)
 
   bio          String?
   phone        String?
@@ -31,15 +32,32 @@ model User {
   timezone     String?   @default("UTC")
   referralCode String?   @unique
 
-  accounts         Account[]
-  challenges       Challenge[]
-  noteFolders      NoteFolder[]
-  notes            Note[]
-  strategies       Strategy[]
-  routines         Routine[]
-  backtestSessions BacktestSession[]
+  accounts          Account[]
+  challenges        Challenge[]
+  noteFolders       NoteFolder[]
+  notes             Note[]
+  strategies        Strategy[]
+  routines          Routine[]
+  backtestSessions  BacktestSession[]
+  passwordResetTokens PasswordResetToken[]
 
   @@map("users")
+}
+
+// ── Password Reset ────────────────────────────────────────────────────────────
+
+model PasswordResetToken {
+  id        String   @id @default(cuid())
+  userId    String
+  tokenHash String   @unique
+  expiresAt DateTime
+  usedAt    DateTime?
+  createdAt DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@map("password_reset_tokens")
 }
 
 // ── Account ──────────────────────────────────────────────────────────────────

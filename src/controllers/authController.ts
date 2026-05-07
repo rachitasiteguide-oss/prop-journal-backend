@@ -2,7 +2,7 @@ import { Request, Response, NextFunction } from 'express';
 import { User } from '@prisma/client';
 import { z } from 'zod';
 import { signToken, setAuthCookie, clearAuthCookie } from '../utils/jwt';
-import { getUserById, registerWithEmail, loginWithEmail } from '../services/authService';
+import { getUserById, registerWithEmail, loginWithEmail, createPasswordResetToken, resetPassword } from '../services/authService';
 import { toPublicUser } from '../services/userService';
 import { env } from '../config/env';
 
@@ -69,6 +69,36 @@ export async function me(req: Request, res: Response, next: NextFunction): Promi
   try {
     const user = await getUserById(req.currentUser!.userId);
     res.json({ status: 'success', data: toPublicUser(user) });
+  } catch (error) {
+    next(error);
+  }
+}
+
+const forgotPasswordSchema = z.object({
+  email: z.string().email(),
+});
+
+const resetPasswordSchema = z.object({
+  token: z.string().min(1),
+  password: z.string().min(8, 'Password must be at least 8 characters'),
+});
+
+export async function forgotPassword(req: Request, res: Response, next: NextFunction): Promise<void> {
+  try {
+    const { email } = forgotPasswordSchema.parse(req.body);
+    await createPasswordResetToken(email);
+    // Always respond with success to prevent email enumeration
+    res.json({ status: 'success', message: 'If that email is registered, a reset link has been sent.' });
+  } catch (error) {
+    next(error);
+  }
+}
+
+export async function resetPasswordHandler(req: Request, res: Response, next: NextFunction): Promise<void> {
+  try {
+    const { token, password } = resetPasswordSchema.parse(req.body);
+    await resetPassword(token, password);
+    res.json({ status: 'success', message: 'Password updated successfully. You can now log in.' });
   } catch (error) {
     next(error);
   }

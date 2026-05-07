@@ -34,6 +34,14 @@ export async function updateProfile(
   return toPublicUser(user);
 }
 
+export async function completeOnboarding(userId: string): Promise<PublicUser> {
+  const user = await prisma.user.update({
+    where: { id: userId },
+    data: { onboardingCompleted: true },
+  });
+  return toPublicUser(user);
+}
+
 export async function changePassword(
   userId: string,
   currentPassword: string,

@@ -1,6 +1,6 @@
 import { Router } from 'express';
 import passport from 'passport';
-import { googleCallback, logout, me, register, login } from '../controllers/authController';
+import { googleCallback, logout, me, register, login, forgotPassword, resetPasswordHandler } from '../controllers/authController';
 import { requireAuth } from '../middlewares/authMiddleware';
 
 const router = Router();
@@ -35,5 +35,9 @@ router.post('/login', login);
 
 // Logout
 router.post('/logout', logout);
+
+// Password reset
+router.post('/forgot-password', forgotPassword);
+router.post('/reset-password', resetPasswordHandler);
 
 export default router;

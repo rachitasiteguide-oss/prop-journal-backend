@@ -1,6 +1,6 @@
 import { Request, Response, NextFunction } from 'express';
 import { z } from 'zod';
-import { getProfile, updateProfile, changePassword } from '../services/userService';
+import { getProfile, updateProfile, changePassword, completeOnboarding } from '../services/userService';
 
 const updateProfileSchema = z.object({
   name: z.string().min(1).max(100).optional(),
@@ -29,6 +29,15 @@ export async function updateProfileHandler(req: Request, res: Response, next: Ne
   try {
     const data = updateProfileSchema.parse(req.body);
     const user = await updateProfile(req.currentUser!.userId, data);
+    res.json({ status: 'success', data: user });
+  } catch (error) {
+    next(error);
+  }
+}
+
+export async function completeOnboardingHandler(req: Request, res: Response, next: NextFunction): Promise<void> {
+  try {
+    const user = await completeOnboarding(req.currentUser!.userId);
     res.json({ status: 'success', data: user });
   } catch (error) {
     next(error);
