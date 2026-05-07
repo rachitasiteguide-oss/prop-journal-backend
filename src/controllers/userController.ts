@@ -2,6 +2,15 @@ import { Request, Response, NextFunction } from 'express';
 import { z } from 'zod';
 import { getProfile, updateProfile, changePassword, completeOnboarding } from '../services/userService';
 
+const challengeConfigSchema = z.object({
+  firmName: z.string().max(100),
+  phase: z.enum(['PHASE_1', 'PHASE_2', 'FUNDED']),
+  startingBalance: z.number().positive(),
+  profitTargetPct: z.number().min(0).max(100),
+  maxDrawdownPct: z.number().min(0).max(100),
+  dailyLossLimitPct: z.number().min(0).max(100),
+});
+
 const updateProfileSchema = z.object({
   name: z.string().min(1).max(100).optional(),
   avatar: z.string().url().optional(),
@@ -9,6 +18,7 @@ const updateProfileSchema = z.object({
   phone: z.string().max(20).optional(),
   country: z.string().max(60).optional(),
   timezone: z.string().max(60).optional(),
+  challengeConfig: challengeConfigSchema.optional(),
 });
 
 const changePasswordSchema = z.object({

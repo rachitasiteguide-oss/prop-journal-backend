@@ -25,7 +25,15 @@ export async function getProfile(userId: string): Promise<PublicUser> {
 
 export async function updateProfile(
   userId: string,
-  data: { name?: string; avatar?: string; bio?: string; phone?: string; country?: string; timezone?: string },
+  data: {
+    name?: string;
+    avatar?: string;
+    bio?: string;
+    phone?: string;
+    country?: string;
+    timezone?: string;
+    challengeConfig?: object;
+  },
 ): Promise<PublicUser> {
   const user = await prisma.user.update({
     where: { id: userId },

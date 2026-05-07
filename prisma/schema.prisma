@@ -25,6 +25,7 @@ model User {
 
   showOnLeaderboard    Boolean @default(false)
   onboardingCompleted  Boolean @default(false)
+  challengeConfig      Json?
 
   bio          String?
   phone        String?
