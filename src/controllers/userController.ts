@@ -1,6 +1,6 @@
 import { Request, Response, NextFunction } from 'express';
 import { z } from 'zod';
-import { getProfile, updateProfile, changePassword, completeOnboarding } from '../services/userService';
+import { getProfile, updateProfile, changePassword, toggleTradingLock, completeOnboarding } from '../services/userService';
 
 const challengeConfigSchema = z.object({
   firmName: z.string().max(100),
@@ -39,6 +39,15 @@ export async function updateProfileHandler(req: Request, res: Response, next: Ne
   try {
     const data = updateProfileSchema.parse(req.body);
     const user = await updateProfile(req.currentUser!.userId, data);
+    res.json({ status: 'success', data: user });
+  } catch (error) {
+    next(error);
+  }
+}
+
+export async function toggleTradingLockHandler(req: Request, res: Response, next: NextFunction): Promise<void> {
+  try {
+    const user = await toggleTradingLock(req.currentUser!.userId);
     res.json({ status: 'success', data: user });
   } catch (error) {
     next(error);

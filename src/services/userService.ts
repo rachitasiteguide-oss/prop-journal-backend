@@ -42,6 +42,16 @@ export async function updateProfile(
   return toPublicUser(user);
 }
 
+export async function toggleTradingLock(userId: string): Promise<PublicUser> {
+  const user = await prisma.user.findUnique({ where: { id: userId } });
+  if (!user) throw new AppError('User not found', 404);
+  const updated = await prisma.user.update({
+    where: { id: userId },
+    data: { tradingLocked: !user.tradingLocked },
+  });
+  return toPublicUser(updated);
+}
+
 export async function completeOnboarding(userId: string): Promise<PublicUser> {
   const user = await prisma.user.update({
     where: { id: userId },
