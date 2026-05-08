@@ -321,6 +321,11 @@ model Strategy {
   color       String   @default("#6366f1")
   isDefault   Boolean  @default(false)
 
+  // Optional executable strategy definition (CustomStrategyDSL JSON).
+  // When present, the strategy can be selected directly from the backtesting
+  // wizard's "From My Strategies" picker — no need to rebuild the DSL.
+  definition  Json?
+
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
@@ -565,6 +570,10 @@ model Candle {
   volume    Float    @default(0)
 
   @@unique([symbol, timeframe, openTime])
-  @@index([symbol, timeframe, openTime])
+  // The non-unique @@index on (symbol, timeframe, openTime) is intentionally
+  // omitted — Prisma's @@unique already creates an index on the same columns.
+  // A *covering* index with INCLUDE (open, high, low, close, volume) is
+  // managed by the migration `20260508000000_candles_covering_index...`
+  // because Prisma 5.22 does not yet generate INCLUDE clauses.
   @@map("candles")
 }

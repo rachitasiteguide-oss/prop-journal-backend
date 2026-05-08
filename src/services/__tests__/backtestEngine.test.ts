@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { runAutomatedBacktest, type EngineConfig } from '../backtestEngine';
+import { clearSignalCache } from '../signalCache';
 
 vi.mock('../../config/db', () => ({
   prisma: {
@@ -91,6 +92,10 @@ function getCreatedTrades() {
 beforeEach(() => {
   vi.clearAllMocks();
   setupMocks();
+  // Wipe the in-memory signal cache so a previous test's signals can't be
+  // reused when the next test mocks getCandles to return different data
+  // for the same (symbol, timeframe, range, strategy, params) tuple.
+  clearSignalCache();
 });
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
@@ -144,9 +149,12 @@ describe('backtestEngine', () => {
     const buyTrade = getCreatedTrades()[0];
     expect(Number(buyTrade.entryPrice)).toBeCloseTo(rawBuyOpen * 1.001, 6);
 
-    // Reset for SELL test
+    // Reset for SELL test — also clear the signal cache, since the cache
+    // key (symbol, timeframe, range, strategy, params) is identical between
+    // the two scenarios but the candle data differs (BUY vs SELL crossover).
     vi.clearAllMocks();
     setupMocks();
+    clearSignalCache();
 
     // SELL: entryPrice = rawOpen × (1 - slippagePct)
     const sellCandles = buildSellCrossoverCandles();
@@ -206,6 +214,7 @@ describe('backtestEngine', () => {
 
     vi.clearAllMocks();
     setupMocks();
+    clearSignalCache();
 
     // ── STOCKS: BUY 10 shares, entry 100 → force-close 105 → +$50 ────────────
     const stockCandles = buildBuyCrossoverCandles();
