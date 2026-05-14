@@ -489,6 +489,10 @@ model BacktestSession {
   //   { fastPeriod, slowPeriod, slippagePct, commission, stopLossPct,
   //     takeProfitRatio, riskPerTrade, volume, maxOpenPositions, ... }
   strategyConfig  Json?
+  // CUSTOM-strategy DSL persisted alongside the session so "Run Again" on
+  // the analytics page can replay the run without the frontend needing to
+  // resend the full builder payload. Shape mirrors CustomStrategyDSL.
+  customStrategy  Json?
   runStatus       RunStatus      @default(IDLE)
   runProgress     Int            @default(0)   // 0–100
   runError        String?

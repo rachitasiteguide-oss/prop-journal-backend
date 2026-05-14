@@ -203,10 +203,11 @@ const runSchema = z.object({
   slippagePct:      z.number().min(0).max(0.05).default(0),
   commission:       z.number().min(0).max(100).default(0),
   maxOpenPositions: z.number().int().min(1).max(5).default(1),
-}).refine(
-  (b) => b.strategyType !== 'CUSTOM' || b.customStrategy !== undefined,
-  { message: 'customStrategy is required when strategyType is CUSTOM.' },
-);
+});
+// Note: when strategyType is CUSTOM, customStrategy may be omitted in the
+// body — the service falls back to the DSL persisted on the session from a
+// previous run. Validation of "missing in both places" lives in the
+// service so it can read the session row.
 
 export async function runSessionHandler(req: Request, res: Response, next: NextFunction): Promise<void> {
   try {

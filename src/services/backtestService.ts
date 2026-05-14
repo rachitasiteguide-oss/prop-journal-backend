@@ -383,6 +383,20 @@ export async function triggerRun(
   const session = await prisma.backtestSession.findFirst({ where: { id: sessionId, userId } });
   if (!session) throw new AppError('Session not found', 404);
 
+  // "Run Again" on the analytics page resubmits without the full builder
+  // payload — fall back to the DSL we persisted on the previous run.
+  const sessionRow = session as typeof session & { customStrategy?: unknown };
+  const effectiveCustomStrategy = (params.customStrategy ?? sessionRow.customStrategy ?? undefined) as
+    | import('./customStrategyInterpreter').CustomStrategyDSL
+    | undefined;
+
+  if (params.strategyType === 'CUSTOM' && !effectiveCustomStrategy) {
+    throw new AppError(
+      'CUSTOM strategy requires a customStrategy DSL. Open the strategy builder and save your rules.',
+      400,
+    );
+  }
+
   // Persist the run config on the session before execution starts.
   // Merge slippage/commission/sizing into the JSON blob so the frontend
   // bias banner can read them from session.strategyConfig.
@@ -399,13 +413,18 @@ export async function triggerRun(
         stopLossPct:     params.stopLossPct,
         takeProfitRatio: params.takeProfitRatio,
       } as Prisma.InputJsonValue,
+      // Store the DSL when CUSTOM; clear it otherwise so a session that
+      // switches from CUSTOM to a built-in doesn't carry stale rules.
+      customStrategy: params.strategyType === 'CUSTOM'
+        ? (effectiveCustomStrategy as unknown as Prisma.InputJsonValue)
+        : Prisma.JsonNull,
     },
   });
 
   const config: EngineConfig = {
     strategyType:     params.strategyType,
     strategyConfig:   params.strategyConfig,
-    customStrategy:   params.customStrategy as import('./customStrategyInterpreter').CustomStrategyDSL | undefined,
+    customStrategy:   effectiveCustomStrategy,
     startingBalance:  session.startingBalance,
     volume:           params.volume,
     stopLossPct:      params.stopLossPct,
