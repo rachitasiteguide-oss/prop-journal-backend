@@ -58,17 +58,36 @@ export const SUPPORTED_TIMEFRAMES = Object.keys(YF_INTERVAL_MAP);
 //   CRYPTO : "BTC-USD" → "BTC-USD"    (already correct)
 //   STOCKS : "AAPL"    → "AAPL"       (no change)
 
+// Yahoo Finance has no spot-metal feed: XAUUSD=X, XAGUSD=X, XPTUSD=X, XPDUSD=X
+// all return "No data found, symbol may be delisted". The user-facing symbols
+// (XAU/USD etc.) must be routed to the COMEX futures tickers instead.
+const METAL_TO_FUTURES: Record<string, string> = {
+  XAU: 'GC=F',  // Gold
+  XAG: 'SI=F',  // Silver
+  XPT: 'PL=F',  // Platinum
+  XPD: 'PA=F',  // Palladium
+};
+
 export function normalizeYFSymbol(symbol: string, instrumentType: string): string {
   const s = symbol.toUpperCase().replace(/\s+/g, '');
+  const lettersOnly = s.replace(/[^A-Z]/g, '');
+
+  // Metals override — regardless of declared instrumentType, route XAU/XAG/etc.
+  // to the futures ticker Yahoo actually serves.
+  const metalPrefix = lettersOnly.slice(0, 3);
+  if (METAL_TO_FUTURES[metalPrefix] && lettersOnly.endsWith('USD')) {
+    return METAL_TO_FUTURES[metalPrefix];
+  }
+
   switch (instrumentType) {
     case 'FOREX':
       // Strip any broker suffixes (e.g. "EURUSDm" → "EURUSD"), then append =X
-      return s.replace(/[^A-Z]/g, '').slice(0, 6) + '=X';
+      return lettersOnly.slice(0, 6) + '=X';
     case 'CRYPTO':
       return s.includes('-') ? s : `${s}-USD`;
     default:
-      // STOCKS, FUTURES, CFD, OPTIONS — use symbol as-is
-      return s;
+      // STOCKS, FUTURES, CFD, OPTIONS — strip slashes/punctuation but keep as-is
+      return lettersOnly || s;
   }
 }
 

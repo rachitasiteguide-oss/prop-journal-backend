@@ -44,6 +44,31 @@ describe('normalizeYFSymbol', () => {
   it('STOCKS: returns symbol as-is (uppercased)', () => {
     expect(normalizeYFSymbol('AAPL', 'STOCKS')).toBe('AAPL');
   });
+
+  // ── Metals: Yahoo has no spot-metal feed, must route to COMEX futures ─────
+  it('METAL: XAU/USD → GC=F (gold futures), regardless of FOREX classification', () => {
+    expect(normalizeYFSymbol('XAU/USD', 'FOREX')).toBe('GC=F');
+  });
+
+  it('METAL: XAUUSD (no slash) → GC=F', () => {
+    expect(normalizeYFSymbol('XAUUSD', 'FOREX')).toBe('GC=F');
+  });
+
+  it('METAL: XAGUSD → SI=F (silver futures)', () => {
+    expect(normalizeYFSymbol('XAG/USD', 'FOREX')).toBe('SI=F');
+  });
+
+  it('METAL: XPTUSD → PL=F (platinum futures)', () => {
+    expect(normalizeYFSymbol('XPTUSD', 'FOREX')).toBe('PL=F');
+  });
+
+  it('METAL: XPDUSD → PA=F (palladium futures)', () => {
+    expect(normalizeYFSymbol('XPD/USD', 'CFD')).toBe('PA=F');
+  });
+
+  it('STOCKS: strips slashes/punctuation defensively', () => {
+    expect(normalizeYFSymbol('BRK/B', 'STOCKS')).toBe('BRKB');
+  });
 });
 
 // ── fetchAndCacheCandles — input validation ───────────────────────────────────
