@@ -15,6 +15,7 @@ import { parentPort, workerData } from 'node:worker_threads';
 import {
   generateSignalsPure, runEventLoopPure,
   type PureCandle, type PureEngineConfig, type Signal, type PureTradeResult,
+  type RunDiagnostics,
 } from './backtestEngineCore';
 
 interface WorkerInput {
@@ -28,7 +29,7 @@ interface WorkerInput {
 
 export type WorkerMessage =
   | { type: 'progress'; value: number }
-  | { type: 'complete'; closedTrades: PureTradeResult[]; finalBalance: number; signals: Signal[] }
+  | { type: 'complete'; closedTrades: PureTradeResult[]; finalBalance: number; signals: Signal[]; diagnostics: RunDiagnostics }
   | { type: 'error';    message: string };
 
 if (!parentPort) {
@@ -56,7 +57,7 @@ try {
       input.config.customStrategy,
     );
 
-  const { closedTrades, finalBalance } = runEventLoopPure(
+  const { closedTrades, finalBalance, diagnostics } = runEventLoopPure(
     rehydratedCandles,
     signals,
     input.config,
@@ -72,6 +73,7 @@ try {
     // worker had a miss. (No-op when cachedSignals was already provided —
     // we just echo it back.)
     signals,
+    diagnostics,
   } satisfies WorkerMessage);
 } catch (err) {
   parentPort.postMessage({

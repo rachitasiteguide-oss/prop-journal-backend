@@ -21,8 +21,9 @@ import { type CustomStrategyDSL } from './customStrategyInterpreter';
 import { getCachedSignals, setCachedSignals } from './signalCache';
 import {
   generateSignalsPure, runEventLoopPure, minCandlesRequired,
-  type PureCandle, type PureTradeResult, type Signal,
+  type PureCandle, type PureTradeResult, type Signal, type RunDiagnostics,
 } from './backtestEngineCore';
+import type { Prisma } from '@prisma/client';
 import type { WorkerMessage } from './backtestWorker';
 
 // ── Public config ─────────────────────────────────────────────────────────────
@@ -63,6 +64,7 @@ interface EngineRunResult {
   closedTrades: PureTradeResult[];
   finalBalance: number;
   signals:      Signal[];
+  diagnostics:  RunDiagnostics;
 }
 
 // Spawn the worker, forward progress events to a callback, await completion.
@@ -104,6 +106,7 @@ function runEngineInWorker(
             closedTrades: msg.closedTrades,
             finalBalance: msg.finalBalance,
             signals:      msg.signals,
+            diagnostics:  msg.diagnostics,
           });
           break;
         case 'error':
@@ -132,10 +135,10 @@ function runEngineInline(
 ): EngineRunResult {
   const signals = cachedSignals
     ?? generateSignalsPure(candles, config.strategyType, config.strategyConfig, config.customStrategy);
-  const { closedTrades, finalBalance } = runEventLoopPure(
+  const { closedTrades, finalBalance, diagnostics } = runEventLoopPure(
     candles, signals, config, symbol, onProgress,
   );
-  return { closedTrades, finalBalance, signals };
+  return { closedTrades, finalBalance, signals, diagnostics };
 }
 
 // ── Main entry point ──────────────────────────────────────────────────────────
@@ -230,7 +233,7 @@ export async function runAutomatedBacktest(
     };
 
     // 8. Run the engine — worker if in production, inline for tests/debug.
-    const { closedTrades, finalBalance, signals } = shouldUseWorker()
+    const { closedTrades, finalBalance, signals, diagnostics } = shouldUseWorker()
       ? await runEngineInWorker(candles, cachedSignals, config, session.symbol, onProgress)
       : runEngineInline    (candles, cachedSignals, config, session.symbol, onProgress);
 
@@ -261,7 +264,8 @@ export async function runAutomatedBacktest(
       });
     }
 
-    // 11. Mark session COMPLETED.
+    // 11. Mark session COMPLETED and persist diagnostics so the metrics
+    //     endpoint can explain a zero-trade run without re-running.
     await prisma.backtestSession.update({
       where: { id: sessionId },
       data: {
@@ -269,6 +273,7 @@ export async function runAutomatedBacktest(
         runProgress:    100,
         runCompletedAt: new Date(),
         currentBalance: parseFloat(finalBalance.toFixed(2)),
+        runDiagnostics: diagnostics as unknown as Prisma.InputJsonValue,
       },
     });
 

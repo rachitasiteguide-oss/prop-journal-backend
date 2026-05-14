@@ -165,18 +165,48 @@ const ALL_STRATEGY_TYPES = [
   'CCI_REVERSAL', 'WILLIAMS_R', 'RSI_MA_COMBO', 'CUSTOM',
 ] as const;
 
+// Strict shape for the CUSTOM DSL — same rules as the saved-strategy
+// endpoint. Validating at the run boundary prevents empty/malformed DSLs
+// from sneaking through and silently producing zero-trade "successful" runs.
+const customConditionSchema = z.object({
+  left:  z.string().min(1),
+  op:    z.enum(['GT', 'LT', 'GTE', 'LTE', 'EQ', 'CROSSES_ABOVE', 'CROSSES_BELOW']),
+  right: z.union([z.string(), z.number()]),
+});
+const customRuleGroupSchema = z.object({
+  logic:      z.enum(['AND', 'OR']),
+  conditions: z.array(customConditionSchema).max(10),
+});
+const customStrategySchema = z.object({
+  name:        z.string().min(1).max(120),
+  description: z.string().max(500).optional(),
+  indicators:  z.array(z.object({
+    id:     z.string().min(1).max(50),
+    type:   z.string().min(1),
+    params: z.record(z.union([z.number(), z.string()])).optional(),
+  })).max(20),
+  buy:  customRuleGroupSchema,
+  sell: customRuleGroupSchema,
+}).refine(
+  (d) => d.buy.conditions.length + d.sell.conditions.length > 0,
+  { message: 'Custom strategy must have at least one buy or sell condition.' },
+);
+
 const runSchema = z.object({
   timeframe:        z.enum(['D1', 'W1', 'H1', 'M30', 'M15']),
   strategyType:     z.enum(ALL_STRATEGY_TYPES),
   strategyConfig:   z.record(z.union([z.number(), z.string()])),
-  customStrategy:   z.record(z.unknown()).optional(),
+  customStrategy:   customStrategySchema.optional(),
   volume:           z.number().positive().default(1),
   stopLossPct:      z.number().min(0.001).max(0.20).default(0.02),
   takeProfitRatio:  z.number().min(0.5).max(10).default(2),
   slippagePct:      z.number().min(0).max(0.05).default(0),
   commission:       z.number().min(0).max(100).default(0),
   maxOpenPositions: z.number().int().min(1).max(5).default(1),
-});
+}).refine(
+  (b) => b.strategyType !== 'CUSTOM' || b.customStrategy !== undefined,
+  { message: 'customStrategy is required when strategyType is CUSTOM.' },
+);
 
 export async function runSessionHandler(req: Request, res: Response, next: NextFunction): Promise<void> {
   try {

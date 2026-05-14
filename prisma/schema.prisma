@@ -494,6 +494,11 @@ model BacktestSession {
   runError        String?
   runStartedAt    DateTime?
   runCompletedAt  DateTime?
+  // Engine-emitted run diagnostics. Populated when runStatus = COMPLETED.
+  // Shape: { candleCount, signalCount, buySignals, sellSignals,
+  //          entryAttempts, entriesTaken, entriesSkipped, forceClosed,
+  //          emptyReason?: string }
+  runDiagnostics  Json?
 
   createdAt       DateTime       @default(now())
   updatedAt       DateTime       @updatedAt

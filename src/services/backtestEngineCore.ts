@@ -370,13 +370,28 @@ function customStrategyWarmup(dsl?: CustomStrategyDSL): number {
 // reports go through `onProgress` so the main thread can decide what to do
 // with them (write to DB, post-message back, log, ignore).
 
+// Diagnostics emitted alongside every run. Surfaced through the metrics
+// endpoint so the frontend can explain *why* a run produced zero trades
+// (no signals fired, signals fired but couldn't enter, etc.).
+export interface RunDiagnostics {
+  candleCount:    number;
+  signalCount:    number;
+  buySignals:     number;
+  sellSignals:    number;
+  entryAttempts:  number;
+  entriesTaken:   number;
+  entriesSkipped: number;   // signal fired but maxOpenPositions or final-bar prevented entry
+  forceClosed:    number;   // open positions closed at end of data
+  emptyReason?:   string;   // human-readable explanation when closedTrades.length === 0
+}
+
 export function runEventLoopPure(
   candles: PureCandle[],
   signals: Signal[],
   config: PureEngineConfig,
   symbol: string,
   onProgress?: ProgressCb,
-): { closedTrades: PureTradeResult[]; finalBalance: number } {
+): { closedTrades: PureTradeResult[]; finalBalance: number; diagnostics: RunDiagnostics } {
   const n = candles.length;
 
   const opens     = new Float64Array(n);
@@ -396,6 +411,15 @@ export function runEventLoopPure(
   const openPositions: OpenPosition[] = [];
   const closedTrades:  PureTradeResult[] = [];
   let runningBalance = config.startingBalance;
+
+  // Diagnostic counters — incremented inline in the hot loop. Counting
+  // signals upfront is O(n) and cheap; doing it inside the loop avoids a
+  // second pass.
+  let buySignals     = 0;
+  let sellSignals    = 0;
+  let entryAttempts  = 0;
+  let entriesTaken   = 0;
+  let entriesSkipped = 0;
 
   // Hoist config out of the hot loop.
   const slippagePct      = config.slippagePct;
@@ -455,9 +479,12 @@ export function runEventLoopPure(
     openPositions.length = writeIdx;
 
     // Step 2: entry signal.
-    if (openPositions.length < maxOpenPositions && i + 1 < n) {
-      const signal = signals[i];
-      if (signal) {
+    const signal = signals[i];
+    if (signal) {
+      if (signal === 'BUY') buySignals++; else sellSignals++;
+      const canEnter = openPositions.length < maxOpenPositions && i + 1 < n;
+      if (canEnter) {
+        entryAttempts++;
         const rawEntry = opens[i + 1];
         const entryPrice = signal === 'BUY'
           ? rawEntry * (1 + slippagePct)
@@ -479,6 +506,9 @@ export function runEventLoopPure(
           volume,
           slippage,
         });
+        entriesTaken++;
+      } else {
+        entriesSkipped++;
       }
     }
   }
@@ -487,6 +517,7 @@ export function runEventLoopPure(
   const lastIdx      = n - 1;
   const lastClose    = closes[lastIdx];
   const lastOpenTime = openTimes[lastIdx];
+  const forceClosed  = openPositions.length;
   for (const pos of openPositions) {
     const rawPnl   = calcRawPnl(pos.side, pos.entryPrice, lastClose, pos.volume, instrumentType);
     const finalPnl = rawPnl - commission;
@@ -509,5 +540,53 @@ export function runEventLoopPure(
     });
   }
 
-  return { closedTrades, finalBalance: runningBalance };
+  const diagnostics: RunDiagnostics = {
+    candleCount:    n,
+    signalCount:    buySignals + sellSignals,
+    buySignals,
+    sellSignals,
+    entryAttempts,
+    entriesTaken,
+    entriesSkipped,
+    forceClosed,
+  };
+  diagnostics.emptyReason = deriveEmptyReason(diagnostics, closedTrades.length, config);
+
+  return { closedTrades, finalBalance: runningBalance, diagnostics };
+}
+
+// Build a user-facing explanation of why the run produced zero trades.
+// Ordered by specificity — the first matching condition wins.
+function deriveEmptyReason(
+  d: RunDiagnostics,
+  closedTradeCount: number,
+  config: PureEngineConfig,
+): string | undefined {
+  if (closedTradeCount > 0) return undefined;
+
+  if (d.signalCount === 0) {
+    if (config.strategyType === 'CUSTOM') {
+      return 'Your strategy produced no buy or sell signals over this date range. '
+        + 'The conditions may be too restrictive, indicator thresholds may never have been crossed, '
+        + 'or the date range may be too short for the indicator warmup. '
+        + 'Try widening the date range or loosening the threshold values.';
+    }
+    return `The ${config.strategyType} strategy produced no signals over this date range. `
+      + 'Try widening the date range or adjusting the strategy parameters.';
+  }
+
+  if (d.entryAttempts === 0 && d.entriesSkipped > 0) {
+    return `Signals fired (${d.signalCount}) but every one landed on the final bar, `
+      + 'so no entries could be taken. Extend the end date by at least one bar.';
+  }
+
+  if (d.entriesTaken === 0) {
+    return `Signals fired (${d.signalCount}) but no entries were taken. `
+      + 'Check maxOpenPositions and slippage settings.';
+  }
+
+  // Entries were taken but somehow zero trades closed — shouldn't be
+  // reachable because we force-close at end of data, but cover defensively.
+  return 'Entries were taken but no trades were recorded. This is unexpected — '
+    + 'please report this run id.';
 }

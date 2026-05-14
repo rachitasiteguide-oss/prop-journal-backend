@@ -307,9 +307,34 @@ export async function getSessionAnalytics(userId: string, sessionId: string) {
     return s + (new Date(t.exitAt).getTime() - new Date(t.entryAt).getTime());
   }, 0) / trades.length / 1000 / 60 : 0; // in minutes
 
+  // Surface engine-emitted diagnostics so the UI can explain a zero-trade
+  // run without forcing the user to re-run anything. Falls back to an
+  // inferred reason for legacy sessions that pre-date the runDiagnostics
+  // column (e.g. an empty trade list with no diagnostics is most likely an
+  // older run from before the column existed).
+  const sessionLike = session as typeof session & { runDiagnostics?: unknown };
+  const diagnostics = (sessionLike.runDiagnostics ?? null) as
+    | (import('./backtestEngineCore').RunDiagnostics)
+    | null;
+
+  let emptyReason: string | undefined;
+  if (totalTrades === 0) {
+    if (diagnostics?.emptyReason) {
+      emptyReason = diagnostics.emptyReason;
+    } else if (session.runStatus === 'FAILED') {
+      emptyReason = `Run failed: ${session.runError ?? 'unknown error'}.`;
+    } else if (session.runStatus !== 'COMPLETED') {
+      emptyReason = `Run is ${session.runStatus.toLowerCase()} — wait for it to complete.`;
+    } else {
+      emptyReason = 'No trades were produced. Re-run the backtest to capture detailed diagnostics.';
+    }
+  }
+
   return {
     session: { ...session, trades: undefined },
     trades: session.trades,
+    diagnostics,
+    emptyReason,
     metrics: {
       totalPnl: parseFloat(totalPnl.toFixed(2)),
       totalPnlPct: parseFloat(((totalPnl / session.startingBalance) * 100).toFixed(2)),

@@ -12,7 +12,7 @@ import {
   type IndicatorType,
   type ConditionOp,
 } from '../customStrategyInterpreter';
-import { generateSignalsPure, minCandlesRequired } from '../backtestEngineCore';
+import { generateSignalsPure, minCandlesRequired, runEventLoopPure } from '../backtestEngineCore';
 
 // ── Synthetic candle generators ─────────────────────────────────────────────
 
@@ -423,6 +423,59 @@ describe('minCandlesRequired: CUSTOM warmup derivation', () => {
       sell: { logic: 'AND', conditions: [] },
     };
     expect(minCandlesRequired('CUSTOM', {}, dsl)).toBe(101);
+  });
+});
+
+// ── Run diagnostics: explain why zero trades ────────────────────────────────
+
+describe('runEventLoopPure: zero-trade diagnostics', () => {
+  const baseConfig = {
+    strategyType:     'CUSTOM' as const,
+    strategyConfig:   {},
+    startingBalance:  10000,
+    volume:           1,
+    stopLossPct:      0.02,
+    takeProfitRatio:  2,
+    slippagePct:      0,
+    commission:       0,
+    maxOpenPositions: 1,
+    instrumentType:   'STOCK',
+  };
+
+  function pureCandles(n: number): Array<{ openTime: Date; open: number; high: number; low: number; close: number; volume: number }> {
+    return uptrend(n).map((c, i) => ({ ...c, openTime: new Date(Date.UTC(2024, 0, i + 1)) }));
+  }
+
+  it('flags no-signals when every signal slot is null', () => {
+    const candles = pureCandles(30);
+    const signals = new Array<'BUY'|'SELL'|null>(30).fill(null);
+    const { diagnostics } = runEventLoopPure(candles, signals, baseConfig, 'TEST');
+    expect(diagnostics.signalCount).toBe(0);
+    expect(diagnostics.entriesTaken).toBe(0);
+    expect(diagnostics.emptyReason).toMatch(/no buy or sell signals/i);
+  });
+
+  it('flags final-bar-only signals as unenterable', () => {
+    const candles = pureCandles(30);
+    const signals = new Array<'BUY'|'SELL'|null>(30).fill(null);
+    signals[29] = 'BUY'; // last bar — entry can't fire (needs i+1)
+    const { diagnostics, closedTrades } = runEventLoopPure(candles, signals, baseConfig, 'TEST');
+    expect(closedTrades.length).toBe(0);
+    expect(diagnostics.signalCount).toBe(1);
+    expect(diagnostics.entriesTaken).toBe(0);
+    expect(diagnostics.entriesSkipped).toBe(1);
+    expect(diagnostics.emptyReason).toMatch(/final bar/i);
+  });
+
+  it('reports counts and no emptyReason when trades close normally', () => {
+    const candles = pureCandles(30);
+    const signals = new Array<'BUY'|'SELL'|null>(30).fill(null);
+    signals[5] = 'BUY';
+    const { diagnostics, closedTrades } = runEventLoopPure(candles, signals, baseConfig, 'TEST');
+    expect(diagnostics.signalCount).toBe(1);
+    expect(diagnostics.entriesTaken).toBe(1);
+    expect(closedTrades.length).toBe(1); // closed by force-close or SL/TP
+    expect(diagnostics.emptyReason).toBeUndefined();
   });
 });
 
