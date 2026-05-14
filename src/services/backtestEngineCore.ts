@@ -285,7 +285,12 @@ export function generateSignalsPure(
     }
 
     case 'CUSTOM': {
-      if (!customStrategy) break;
+      // Loud failure beats a silent zero-trade run. A CUSTOM run without a
+      // DSL is a misconfiguration upstream (controller forgot to forward
+      // the customStrategy field, or persisted session row was corrupted).
+      if (!customStrategy) {
+        throw new Error('CUSTOM strategy selected but no customStrategy DSL provided');
+      }
       const customSignals = generateCustomSignals(candles, customStrategy);
       for (let i = 0; i < candles.length; i++) signals[i] = customSignals[i];
       break;
@@ -300,6 +305,7 @@ export function generateSignalsPure(
 export function minCandlesRequired(
   strategyType: StrategyType,
   strategyConfig: Record<string, number | string>,
+  customStrategy?: CustomStrategyDSL,
 ): number {
   switch (strategyType) {
     case 'MA_CROSS':
@@ -329,8 +335,34 @@ export function minCandlesRequired(
         Number(strategyConfig.maPeriod  ?? 50),
       ) + 2;
     case 'CUSTOM':
-      return 30;
+      // Walk the DSL and pick the largest warmup window. A user wiring up
+      // SMA(200) shouldn't see "got 32 candles" pass validation only to
+      // produce zero signals because the indicator is null for 200 bars.
+      return customStrategyWarmup(customStrategy);
   }
+}
+
+function customStrategyWarmup(dsl?: CustomStrategyDSL): number {
+  if (!dsl) return 30;
+  let maxPeriod = 0;
+  for (const ind of dsl.indicators) {
+    const p = (ind.params ?? {}) as Record<string, unknown>;
+    const candidates = [p.period, p.fastPeriod, p.slowPeriod, p.signalPeriod];
+    for (const v of candidates) {
+      const n = typeof v === 'number' ? v : Number(v);
+      if (Number.isFinite(n) && n > maxPeriod) maxPeriod = n;
+    }
+    if (ind.type === 'MACD_LINE' || ind.type === 'MACD_SIGNAL' || ind.type === 'MACD_HIST') {
+      const slow   = Number(p.slowPeriod   ?? 26);
+      const signal = Number(p.signalPeriod ?? 9);
+      if (slow + signal > maxPeriod) maxPeriod = slow + signal;
+    }
+    if (ind.type === 'ADX' || ind.type === 'DI_PLUS' || ind.type === 'DI_MINUS') {
+      const period = Number(p.period ?? 14);
+      if (period * 2 > maxPeriod) maxPeriod = period * 2;
+    }
+  }
+  return Math.max(maxPeriod + 1, 30);
 }
 
 // ── Pure event loop ───────────────────────────────────────────────────────────

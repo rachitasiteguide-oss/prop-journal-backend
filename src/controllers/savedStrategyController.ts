@@ -8,9 +8,10 @@ const conditionSchema = z.object({
   right: z.union([z.string(), z.number()]),
 });
 
+// See strategyController for the rationale on min/max bounds.
 const ruleGroupSchema = z.object({
   logic:      z.enum(['AND', 'OR']),
-  conditions: z.array(conditionSchema).min(1).max(10),
+  conditions: z.array(conditionSchema).max(10),
 });
 
 const indicatorDefSchema = z.object({
@@ -22,10 +23,13 @@ const indicatorDefSchema = z.object({
 const definitionSchema = z.object({
   name:        z.string().min(1).max(120),
   description: z.string().max(500).optional(),
-  indicators:  z.array(indicatorDefSchema).min(1).max(20),
+  indicators:  z.array(indicatorDefSchema).max(20),
   buy:         ruleGroupSchema,
   sell:        ruleGroupSchema,
-});
+}).refine(
+  (d) => d.buy.conditions.length + d.sell.conditions.length > 0,
+  { message: 'Strategy must have at least one buy or sell condition.' },
+);
 
 const createSchema = z.object({
   name:        z.string().min(1).max(120),

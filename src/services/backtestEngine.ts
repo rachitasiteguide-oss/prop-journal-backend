@@ -186,7 +186,7 @@ export async function runAutomatedBacktest(
     await prisma.backtestSession.update({ where: { id: sessionId }, data: { runProgress: 12 } });
 
     // 5. Validate enough candles for a meaningful run.
-    const lookback = minCandlesRequired(config.strategyType, config.strategyConfig);
+    const lookback = minCandlesRequired(config.strategyType, config.strategyConfig, config.customStrategy);
     const needed   = lookback + 2; // +1 for signal candle, +1 for entry candle
     if (candles.length < needed) {
       throw new AppError(

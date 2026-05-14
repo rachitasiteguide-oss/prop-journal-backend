@@ -55,6 +55,20 @@ interface Candle {
 
 type Series = (number | null)[];
 
+// Frontend inputs sometimes round-trip period values through string state
+// (e.g. `<input type="number">` binding to a string). The interpreter must
+// accept those transparently — otherwise the indicator calculators receive
+// a string for `period` and silently produce NaN-laden output, which then
+// fails every comparison and emits zero signals.
+function num(v: unknown, fallback: number): number {
+  if (typeof v === 'number' && Number.isFinite(v)) return v;
+  if (typeof v === 'string' && v.trim() !== '') {
+    const n = Number(v);
+    if (Number.isFinite(n)) return n;
+  }
+  return fallback;
+}
+
 function buildRegistry(candles: Candle[], indicators: IndicatorDef[]): Map<string, Series> {
   const map = new Map<string, Series>();
   const closes  = candles.map((c) => c.close);
@@ -70,22 +84,22 @@ function buildRegistry(candles: Candle[], indicators: IndicatorDef[]): Map<strin
   map.set('VOLUME', volumes);
 
   for (const def of indicators) {
-    const p = def.params ?? {};
+    const p = (def.params ?? {}) as Record<string, unknown>;
 
     switch (def.type) {
       case 'RSI':
-        map.set(def.id, calcRSI(closes, p.period ?? 14));
+        map.set(def.id, calcRSI(closes, num(p.period, 14)));
         break;
       case 'SMA':
-        map.set(def.id, calcSMA(closes, p.period ?? 20));
+        map.set(def.id, calcSMA(closes, num(p.period, 20)));
         break;
       case 'EMA':
-        map.set(def.id, calcEMA(closes, p.period ?? 20));
+        map.set(def.id, calcEMA(closes, num(p.period, 20)));
         break;
       case 'MACD_LINE':
       case 'MACD_SIGNAL':
       case 'MACD_HIST': {
-        const macd = calcMACD(closes, p.fastPeriod ?? 12, p.slowPeriod ?? 26, p.signalPeriod ?? 9);
+        const macd = calcMACD(closes, num(p.fastPeriod, 12), num(p.slowPeriod, 26), num(p.signalPeriod, 9));
         if (def.type === 'MACD_LINE')   map.set(def.id, macd.map((m) => m.macd));
         if (def.type === 'MACD_SIGNAL') map.set(def.id, macd.map((m) => m.signal));
         if (def.type === 'MACD_HIST')   map.set(def.id, macd.map((m) => m.histogram));
@@ -94,7 +108,7 @@ function buildRegistry(candles: Candle[], indicators: IndicatorDef[]): Map<strin
       case 'BB_UPPER':
       case 'BB_MIDDLE':
       case 'BB_LOWER': {
-        const bb = calcBB(closes, p.period ?? 20, p.stdDev ?? 2);
+        const bb = calcBB(closes, num(p.period, 20), num(p.stdDev, 2));
         if (def.type === 'BB_UPPER')  map.set(def.id, bb.map((b) => b.upper));
         if (def.type === 'BB_MIDDLE') map.set(def.id, bb.map((b) => b.middle));
         if (def.type === 'BB_LOWER')  map.set(def.id, bb.map((b) => b.lower));
@@ -102,24 +116,24 @@ function buildRegistry(candles: Candle[], indicators: IndicatorDef[]): Map<strin
       }
       case 'STOCH_K':
       case 'STOCH_D': {
-        const stoch = calcStochastic(highs, lows, closes, p.period ?? 14, p.signalPeriod ?? 3);
+        const stoch = calcStochastic(highs, lows, closes, num(p.period, 14), num(p.signalPeriod, 3));
         if (def.type === 'STOCH_K') map.set(def.id, stoch.map((s) => s.k));
         if (def.type === 'STOCH_D') map.set(def.id, stoch.map((s) => s.d));
         break;
       }
       case 'ATR':
-        map.set(def.id, calcATR(highs, lows, closes, p.period ?? 14));
+        map.set(def.id, calcATR(highs, lows, closes, num(p.period, 14)));
         break;
       case 'CCI':
-        map.set(def.id, calcCCI(highs, lows, closes, p.period ?? 20));
+        map.set(def.id, calcCCI(highs, lows, closes, num(p.period, 20)));
         break;
       case 'WILLIAMS_R':
-        map.set(def.id, calcWilliamsR(highs, lows, closes, p.period ?? 14));
+        map.set(def.id, calcWilliamsR(highs, lows, closes, num(p.period, 14)));
         break;
       case 'ADX':
       case 'DI_PLUS':
       case 'DI_MINUS': {
-        const adx = calcADX(highs, lows, closes, p.period ?? 14);
+        const adx = calcADX(highs, lows, closes, num(p.period, 14));
         if (def.type === 'ADX')      map.set(def.id, adx.map((a) => a.adx));
         if (def.type === 'DI_PLUS')  map.set(def.id, adx.map((a) => a.pdi));
         if (def.type === 'DI_MINUS') map.set(def.id, adx.map((a) => a.mdi));
@@ -128,7 +142,7 @@ function buildRegistry(candles: Candle[], indicators: IndicatorDef[]): Map<strin
       case 'DONCHIAN_UPPER':
       case 'DONCHIAN_LOWER':
       case 'DONCHIAN_MIDDLE': {
-        const dc = calcDonchian(highs, lows, p.period ?? 20);
+        const dc = calcDonchian(highs, lows, num(p.period, 20));
         if (def.type === 'DONCHIAN_UPPER')  map.set(def.id, dc.map((d) => d.upper));
         if (def.type === 'DONCHIAN_LOWER')  map.set(def.id, dc.map((d) => d.lower));
         if (def.type === 'DONCHIAN_MIDDLE') map.set(def.id, dc.map((d) => d.middle));

@@ -14,9 +14,14 @@ const conditionSchema = z.object({
   op:    z.enum(['GT', 'LT', 'GTE', 'LTE', 'EQ', 'CROSSES_ABOVE', 'CROSSES_BELOW']),
   right: z.union([z.string(), z.number()]),
 });
+// One-sided strategies (buy-only or sell-only) are valid — many real
+// systems only enter long or only enter short. We allow either side to be
+// empty but require the DSL as a whole to have at least one rule, otherwise
+// the engine would silently emit zero signals and the user would think the
+// backtest was broken.
 const ruleGroupSchema = z.object({
   logic:      z.enum(['AND', 'OR']),
-  conditions: z.array(conditionSchema).min(1).max(10),
+  conditions: z.array(conditionSchema).max(10),
 });
 const indicatorDefSchema = z.object({
   id:     z.string().min(1).max(50),
@@ -26,10 +31,13 @@ const indicatorDefSchema = z.object({
 const definitionSchema = z.object({
   name:        z.string().min(1).max(120),
   description: z.string().max(500).optional(),
-  indicators:  z.array(indicatorDefSchema).min(1).max(20),
+  indicators:  z.array(indicatorDefSchema).max(20),
   buy:         ruleGroupSchema,
   sell:        ruleGroupSchema,
-});
+}).refine(
+  (d) => d.buy.conditions.length + d.sell.conditions.length > 0,
+  { message: 'Strategy must have at least one buy or sell condition.' },
+);
 
 const createStrategySchema = z.object({
   name:        z.string().min(1).max(100),
