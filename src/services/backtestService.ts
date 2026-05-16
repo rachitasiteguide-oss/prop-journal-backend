@@ -25,6 +25,9 @@ export async function getSession(userId: string, id: string) {
   return session;
 }
 
+export const SUPPORTED_INSTRUMENT_TYPES = ['FOREX', 'STOCKS', 'FUTURES', 'CRYPTO', 'CFD'] as const;
+export type SupportedInstrumentType = typeof SUPPORTED_INSTRUMENT_TYPES[number];
+
 export async function createSession(userId: string, data: {
   name: string; symbol: string; instrumentType?: string;
   startDate: Date; endDate: Date; startingBalance?: number; notes?: string;
@@ -34,12 +37,19 @@ export async function createSession(userId: string, data: {
   strategyConfig?: Record<string, unknown>;
 }) {
   const balance = data.startingBalance ?? 10000;
+  const instrumentType = data.instrumentType ?? 'FOREX';
+  if (!SUPPORTED_INSTRUMENT_TYPES.includes(instrumentType as SupportedInstrumentType)) {
+    throw new AppError(
+      `Unsupported instrumentType "${instrumentType}". Expected one of ${SUPPORTED_INSTRUMENT_TYPES.join(', ')}.`,
+      400,
+    );
+  }
   return prisma.backtestSession.create({
     data: {
       userId,
       name:            data.name,
       symbol:          data.symbol,
-      instrumentType:  data.instrumentType ?? 'FOREX',
+      instrumentType,
       startDate:       data.startDate,
       endDate:         data.endDate,
       startingBalance: balance,
@@ -248,7 +258,9 @@ export async function getSessionAnalytics(userId: string, sessionId: string) {
 
   const profitFactor = Math.abs(avgLoss) > 0 ? Math.abs(avgWin * winners.length) / Math.abs(avgLoss * losers.length) : 0;
 
-  // Equity curve
+  // Equity curve — the public series stays trade-close-to-trade-close so
+  // the rendered chart isn't polluted with mid-trade troughs. Intra-trade
+  // troughs are still considered for drawdown below.
   let runningBalance = session.startingBalance;
   const equityCurve = [{ date: session.startDate.toISOString(), balance: runningBalance }];
   for (const t of trades) {
@@ -256,12 +268,27 @@ export async function getSessionAnalytics(userId: string, sessionId: string) {
     equityCurve.push({ date: (t.exitAt ?? t.entryAt).toISOString(), balance: parseFloat(runningBalance.toFixed(2)) });
   }
 
-  // Drawdown
+  // Drawdown — HWM-to-trough including intra-trade excursion. The classic
+  // close-to-close calc understates true MDD by an order of magnitude for
+  // long-held positions (e.g. a trade that drew down 50% and recovered to
+  // +5% would report 0% DD on the trade-close curve).
   let peak = session.startingBalance;
   let maxDrawdown = 0;
-  for (const pt of equityCurve) {
-    if (pt.balance > peak) peak = pt.balance;
-    const dd = ((peak - pt.balance) / peak) * 100;
+  let eq = session.startingBalance;
+  for (const t of trades) {
+    // Mid-trade trough = equity-at-entry − peak adverse excursion. We treat
+    // it as a transient point that doesn't update `peak`, but does count
+    // toward MDD.
+    const trade = t as typeof t & { maxAdverse?: number | null };
+    const mae = Number(trade.maxAdverse ?? 0);
+    if (mae > 0) {
+      const trough = eq - mae;
+      const dd = peak > 0 ? ((peak - trough) / peak) * 100 : 0;
+      if (dd > maxDrawdown) maxDrawdown = dd;
+    }
+    eq += t.pnl ?? 0;
+    if (eq > peak) peak = eq;
+    const dd = peak > 0 ? ((peak - eq) / peak) * 100 : 0;
     if (dd > maxDrawdown) maxDrawdown = dd;
   }
 
@@ -307,6 +334,94 @@ export async function getSessionAnalytics(userId: string, sessionId: string) {
     return s + (new Date(t.exitAt).getTime() - new Date(t.entryAt).getTime());
   }, 0) / trades.length / 1000 / 60 : 0; // in minutes
 
+  // ── Standard quant metrics ────────────────────────────────────────────────
+  // All computed on a per-trade-return basis. Returns are pnl / equity-at-
+  // entry, which is what each trade actually risked the strategy against.
+  // No risk-free rate adjustment — assumes 0% for backtest comparability.
+  const tradeReturns: number[] = [];
+  let eqForReturns = session.startingBalance;
+  for (const t of trades) {
+    const r = eqForReturns > 0 ? (t.pnl ?? 0) / eqForReturns : 0;
+    tradeReturns.push(r);
+    eqForReturns += t.pnl ?? 0;
+  }
+  const mean = (arr: number[]) => arr.length === 0 ? 0 : arr.reduce((s, x) => s + x, 0) / arr.length;
+  const stdev = (arr: number[]) => {
+    if (arr.length < 2) return 0;
+    const m = mean(arr);
+    const sq = arr.reduce((s, x) => s + (x - m) ** 2, 0) / (arr.length - 1);
+    return Math.sqrt(sq);
+  };
+  const meanReturn = mean(tradeReturns);
+  const stdReturn  = stdev(tradeReturns);
+  const downside   = tradeReturns.filter((r) => r < 0);
+  const downsideStd = stdev(downside);
+  // Sharpe and Sortino are PER-TRADE here (not annualised). Annualising would
+  // require a trade frequency assumption (trades/year) that varies by run; we
+  // report the raw ratio so it remains directly comparable across backtests
+  // run on the same strategy/timeframe.
+  const sharpe  = stdReturn  > 0 ? meanReturn / stdReturn  : 0;
+  const sortino = downsideStd > 0 ? meanReturn / downsideStd : 0;
+
+  // CAGR over the actual run window. Uses the persisted run dates, not the
+  // configured session range — they're identical for AUTO sessions.
+  const runDays = Math.max(
+    1,
+    (new Date(session.endDate).getTime() - new Date(session.startDate).getTime()) / (1000 * 60 * 60 * 24),
+  );
+  const finalBalance = session.startingBalance + totalPnl;
+  const cagr = session.startingBalance > 0 && finalBalance > 0
+    ? (Math.pow(finalBalance / session.startingBalance, 365 / runDays) - 1) * 100
+    : 0;
+
+  // Expectancy: average $ per trade. Most intuitive when looking at scaling
+  // up — multiply by expected number of trades/period to estimate gross.
+  const expectancy = totalTrades > 0 ? totalPnl / totalTrades : 0;
+
+  // R-multiple: pnl / initial-risk. Initial risk = |entry − stopLoss| × volume,
+  // in P&L currency. Only valid for trades with a stopLoss; trades without
+  // one are excluded from the average.
+  const rMultiples = trades
+    .map((t) => {
+      if (t.stopLoss == null) return null;
+      const riskPrice = Math.abs(t.entryPrice - t.stopLoss);
+      if (riskPrice === 0) return null;
+      const pnlPerUnit = (t.pnl ?? 0) / riskPrice / t.volume;
+      return pnlPerUnit;
+    })
+    .filter((x): x is number => x !== null);
+  const avgRMultiple = mean(rMultiples);
+
+  // Ambiguous-exit ratio — bars where both SL and TP were hit on the same
+  // candle, with SL taking priority by Rule 2. Above ~30% means a meaningful
+  // share of "losses" are arbitrary tie-breaks the backtester resolved one
+  // way but live execution could go either way.
+  const ambiguousCount = trades.filter((t) => t.ambiguous === true).length;
+  const ambiguousPct   = totalTrades > 0 ? (ambiguousCount / totalTrades) * 100 : 0;
+
+  // Cost-vs-edge sanity. If round-trip commission exceeds the average
+  // gross-per-trade gain, the strategy is a guaranteed loser no matter the
+  // signal. Surface explicitly — the bottom-line balance hides it.
+  const avgGrossPerTrade = totalTrades > 0
+    ? trades.reduce((s, t) => s + Math.abs(t.pnl ?? 0) + (t.commission ?? 0), 0) / totalTrades
+    : 0;
+  const avgCommissionPerTrade = totalTrades > 0
+    ? trades.reduce((s, t) => s + (t.commission ?? 0), 0) / totalTrades
+    : 0;
+  const costsExceedEdge = avgCommissionPerTrade > 0
+    && totalTrades >= 5
+    && avgCommissionPerTrade >= Math.abs(expectancy)
+    && expectancy <= 0;
+
+  // Force-close ratio — visible across every run, not just zero-trade runs.
+  // Above 20% means the strategy's reported edge is partly an artefact of
+  // where the data window ended.
+  const forceClosedCount = trades.filter((t) => {
+    const tx = t as typeof t & { forceClosed?: boolean | null };
+    return tx.forceClosed === true;
+  }).length;
+  const forceClosedPct = totalTrades > 0 ? (forceClosedCount / totalTrades) * 100 : 0;
+
   // Surface engine-emitted diagnostics so the UI can explain a zero-trade
   // run without forcing the user to re-run anything. Falls back to an
   // inferred reason for legacy sessions that pre-date the runDiagnostics
@@ -351,6 +466,18 @@ export async function getSessionAnalytics(userId: string, sessionId: string) {
       profitFactor: parseFloat(profitFactor.toFixed(2)),
       maxDrawdown: parseFloat(maxDrawdown.toFixed(2)),
       avgDurationMinutes: parseFloat(avgDuration.toFixed(0)),
+      sharpe:        parseFloat(sharpe.toFixed(3)),
+      sortino:       parseFloat(sortino.toFixed(3)),
+      cagr:          parseFloat(cagr.toFixed(2)),
+      expectancy:    parseFloat(expectancy.toFixed(2)),
+      avgRMultiple:  parseFloat(avgRMultiple.toFixed(2)),
+      forceClosed:    forceClosedCount,
+      forceClosedPct: parseFloat(forceClosedPct.toFixed(1)),
+      ambiguous:      ambiguousCount,
+      ambiguousPct:   parseFloat(ambiguousPct.toFixed(1)),
+      avgCommissionPerTrade: parseFloat(avgCommissionPerTrade.toFixed(2)),
+      avgGrossPerTrade:      parseFloat(avgGrossPerTrade.toFixed(2)),
+      costsExceedEdge,
     },
     equityCurve,
     byDay,
@@ -378,6 +505,8 @@ export async function triggerRun(
     slippagePct:     number;
     commission:      number;
     maxOpenPositions: number;
+    propFirmRules?:  import('./backtestEngineCore').PropFirmRulesConfig;
+    sizing?:         import('./backtestEngineCore').SizingConfig;
   },
 ): Promise<void> {
   const session = await prisma.backtestSession.findFirst({ where: { id: sessionId, userId } });
@@ -389,6 +518,22 @@ export async function triggerRun(
   const effectiveCustomStrategy = (params.customStrategy ?? sessionRow.customStrategy ?? undefined) as
     | import('./customStrategyInterpreter').CustomStrategyDSL
     | undefined;
+
+  // Same fallback for prop-firm rules — Run Again without explicit rules
+  // should keep the previous run's challenge config.
+  const persistedConfig = (session.strategyConfig as Record<string, unknown> | null) ?? {};
+  const effectivePropFirmRules =
+    params.propFirmRules
+    ?? (persistedConfig.propFirmRules as
+        import('./backtestEngineCore').PropFirmRulesConfig
+        | undefined);
+
+  // Same fallback for sizing config.
+  const effectiveSizing =
+    params.sizing
+    ?? (persistedConfig.sizing as
+        import('./backtestEngineCore').SizingConfig
+        | undefined);
 
   if (params.strategyType === 'CUSTOM' && !effectiveCustomStrategy) {
     throw new AppError(
@@ -412,7 +557,11 @@ export async function triggerRun(
         volume:          params.volume,
         stopLossPct:     params.stopLossPct,
         takeProfitRatio: params.takeProfitRatio,
-      } as Prisma.InputJsonValue,
+        // Prop-firm rules persisted inside strategyConfig so "Run Again"
+        // pre-populates them without a separate column.
+        ...(effectivePropFirmRules ? { propFirmRules: effectivePropFirmRules } : {}),
+        ...(effectiveSizing        ? { sizing:        effectiveSizing        } : {}),
+      } as unknown as Prisma.InputJsonValue,
       // Store the DSL when CUSTOM; clear it otherwise so a session that
       // switches from CUSTOM to a built-in doesn't carry stale rules.
       customStrategy: params.strategyType === 'CUSTOM'
@@ -433,6 +582,8 @@ export async function triggerRun(
     commission:       params.commission,
     maxOpenPositions: params.maxOpenPositions,
     instrumentType:   session.instrumentType,
+    propFirmRules:    effectivePropFirmRules,
+    sizing:           effectiveSizing,
   };
 
   // Fire-and-forget: return immediately so the HTTP request doesn't time out.

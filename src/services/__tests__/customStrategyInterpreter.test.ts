@@ -236,13 +236,13 @@ describe('customStrategyInterpreter: operand shapes', () => {
     expect(count(generateCustomSignals(candles, dsl), 'BUY')).toBeGreaterThan(0);
   });
 
-  it('unknown indicator id silently produces no signals (current behavior — caller must validate)', () => {
+  it('unknown indicator id is rejected at validation (no longer fails silently)', () => {
     const dsl: CustomStrategyDSL = {
       name: 'unknown', indicators: [],
       buy:  { logic: 'AND', conditions: [{ left: 'nonexistent', op: 'GT', right: 0 }] },
       sell: { logic: 'AND', conditions: [] },
     };
-    expect(count(generateCustomSignals(candles, dsl), 'BUY')).toBe(0);
+    expect(() => generateCustomSignals(candles, dsl)).toThrow(/unknown id "nonexistent"/);
   });
 });
 
@@ -439,7 +439,7 @@ describe('runEventLoopPure: zero-trade diagnostics', () => {
     slippagePct:      0,
     commission:       0,
     maxOpenPositions: 1,
-    instrumentType:   'STOCK',
+    instrumentType:   'STOCKS',
   };
 
   function pureCandles(n: number): Array<{ openTime: Date; open: number; high: number; low: number; close: number; volume: number }> {

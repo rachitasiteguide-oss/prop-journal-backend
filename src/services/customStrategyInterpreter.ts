@@ -36,12 +36,117 @@ export interface RuleGroup {
   conditions: Condition[];
 }
 
+// Bump this whenever the DSL gains/loses indicator types, operators, or any
+// field whose semantics changes incompatibly. Persisted DSLs carry a `version`
+// they were saved against; the engine refuses to run a DSL whose declared
+// version is higher than this constant, so an old backend can't silently
+// misinterpret a new-shape DSL.
+export const DSL_SCHEMA_VERSION = 1;
+
 export interface CustomStrategyDSL {
+  // Optional for backwards compatibility — DSLs saved before this field
+  // existed are treated as version 1.
+  version?:    number;
   name:        string;
   description?: string;
   indicators:  IndicatorDef[];
   buy:         RuleGroup;
   sell:        RuleGroup;
+}
+
+// ── DSL validation ────────────────────────────────────────────────────────────
+// Catches three silent-failure modes called out in the backtesting audit:
+//   1. Unknown indicator-id references (typo "rsi14" vs declared "RSI_14") —
+//      resolve() would return null, every condition becomes false, engine
+//      emits zero signals with no clue why.
+//   2. Reserved-name collisions: a user-declared indicator with id "CLOSE"
+//      overwrites the built-in close price series, silently breaking every
+//      other condition that referenced CLOSE.
+//   3. All-numeric ids ("20", "100") that resolve() short-circuits as numeric
+//      literals — the indicator is unreferenceable.
+//
+// Run this both at save time (controllers) AND at run time (engine), so old
+// DSLs persisted before validation existed are also rejected with a clear
+// message instead of silently producing no signals.
+
+export const BUILT_IN_SERIES = new Set(['CLOSE', 'OPEN', 'HIGH', 'LOW', 'VOLUME']);
+
+function isNumericLiteral(s: string): boolean {
+  const t = s.trim();
+  if (t === '') return false;
+  return Number.isFinite(Number(t));
+}
+
+export function validateCustomStrategyDsl(dsl: CustomStrategyDSL): string[] {
+  const errors: string[] = [];
+
+  // 0. Version compatibility. Older versions are accepted (treated as v1);
+  //    newer versions are rejected so a backend reading a forward-incompatible
+  //    DSL can't silently skip unknown fields.
+  if (dsl.version != null && dsl.version > DSL_SCHEMA_VERSION) {
+    errors.push(
+      `DSL version ${dsl.version} is newer than this engine supports ` +
+      `(max ${DSL_SCHEMA_VERSION}). The strategy was saved by a newer build — ` +
+      `update the backend or re-save the strategy.`,
+    );
+  }
+
+  // 1. Indicator-id hygiene
+  const seenIds = new Set<string>();
+  for (const ind of dsl.indicators ?? []) {
+    const id = ind.id;
+    if (BUILT_IN_SERIES.has(id)) {
+      errors.push(
+        `Indicator id "${id}" is reserved — it would overwrite the built-in ` +
+        `${id} price series. Rename the indicator (e.g. "${id.toLowerCase()}_sma").`,
+      );
+    }
+    if (isNumericLiteral(id)) {
+      errors.push(
+        `Indicator id "${id}" is all-numeric and would be parsed as a literal ` +
+        `number wherever it is referenced. Use a non-numeric name (e.g. "sma_${id}").`,
+      );
+    }
+    if (seenIds.has(id)) {
+      errors.push(`Duplicate indicator id "${id}". Each indicator id must be unique.`);
+    }
+    seenIds.add(id);
+  }
+
+  // 2. Referential integrity for conditions
+  const knownIds = new Set<string>([
+    ...BUILT_IN_SERIES,
+    ...(dsl.indicators ?? []).map((i) => i.id),
+  ]);
+
+  const checkRef = (ref: string | number, location: string): void => {
+    if (typeof ref === 'number') return;
+    if (isNumericLiteral(ref)) return; // numeric literal is valid
+    if (!knownIds.has(ref)) {
+      errors.push(
+        `${location} references unknown id "${ref}". Declare it in indicators[] ` +
+        `or use a built-in (${[...BUILT_IN_SERIES].join(', ')}) or a numeric literal.`,
+      );
+    }
+  };
+
+  (dsl.buy?.conditions ?? []).forEach((c, idx) => {
+    checkRef(c.left,  `buy condition #${idx + 1} (left)`);
+    checkRef(c.right, `buy condition #${idx + 1} (right)`);
+  });
+  (dsl.sell?.conditions ?? []).forEach((c, idx) => {
+    checkRef(c.left,  `sell condition #${idx + 1} (left)`);
+    checkRef(c.right, `sell condition #${idx + 1} (right)`);
+  });
+
+  return errors;
+}
+
+export class CustomStrategyValidationError extends Error {
+  constructor(public readonly errors: string[]) {
+    super(`Custom strategy DSL is invalid:\n  - ${errors.join('\n  - ')}`);
+    this.name = 'CustomStrategyValidationError';
+  }
 }
 
 // ── Candle slice (minimal interface) ─────────────────────────────────────────
@@ -84,12 +189,26 @@ function buildRegistry(candles: Candle[], indicators: IndicatorDef[]): Map<strin
   map.set('VOLUME', volumes);
 
   for (const def of indicators) {
+    // Defence in depth: reject reserved ids even if the DSL bypassed the
+    // validator (e.g. a row persisted before validation existed). Without
+    // this, `map.set(def.id, …)` below would silently overwrite the built-in
+    // CLOSE/OPEN/HIGH/LOW/VOLUME series.
+    if (BUILT_IN_SERIES.has(def.id)) {
+      throw new CustomStrategyValidationError([
+        `Indicator id "${def.id}" is reserved (built-in price series).`,
+      ]);
+    }
     const p = (def.params ?? {}) as Record<string, unknown>;
 
     switch (def.type) {
-      case 'RSI':
-        map.set(def.id, calcRSI(closes, num(p.period, 14)));
+      case 'RSI': {
+        // `params.rounded` (default 1 = match technicalindicators 2-decimal
+        // quantisation). Set to 0 for full-precision RSI — fixes the bar-late
+        // crossover artefact at threshold values for mean-reversion strategies.
+        const rounded = num(p.rounded, 1) !== 0;
+        map.set(def.id, calcRSI(closes, num(p.period, 14), rounded));
         break;
+      }
       case 'SMA':
         map.set(def.id, calcSMA(closes, num(p.period, 20)));
         break;
@@ -230,6 +349,9 @@ export function generateCustomSignals(
   candles: Candle[],
   dsl: CustomStrategyDSL,
 ): Signal[] {
+  const errors = validateCustomStrategyDsl(dsl);
+  if (errors.length > 0) throw new CustomStrategyValidationError(errors);
+
   const registry = buildRegistry(candles, dsl.indicators);
   const signals: Signal[] = new Array(candles.length).fill(null);
 
@@ -242,4 +364,39 @@ export function generateCustomSignals(
   }
 
   return signals;
+}
+
+// ── Per-condition fire counts ────────────────────────────────────────────────
+// Counts how many bars each individual condition evaluates to true, regardless
+// of whether the surrounding AND/OR group ultimately fires. This is the data
+// a trader needs when an ANDed 3-condition strategy emits zero signals: the
+// usual cause is one condition never firing while the other two fire every
+// bar. Without per-condition counts the trader rewrites the entire strategy
+// when they should have tweaked a single threshold.
+
+export interface ConditionFires {
+  buy:  number[];   // index i = bars on which dsl.buy.conditions[i]  was true
+  sell: number[];
+}
+
+export function analyzeCustomDslConditionFires(
+  candles: Candle[],
+  dsl: CustomStrategyDSL,
+): ConditionFires {
+  // Skip validation here — callers always run signal generation first which
+  // performs validation. Re-running it would double the error noise.
+  const registry = buildRegistry(candles, dsl.indicators);
+  const buy  = new Array(dsl.buy.conditions.length).fill(0);
+  const sell = new Array(dsl.sell.conditions.length).fill(0);
+
+  for (let i = 1; i < candles.length; i++) {
+    for (let c = 0; c < dsl.buy.conditions.length; c++) {
+      if (evalCondition(dsl.buy.conditions[c], registry, i)) buy[c]++;
+    }
+    for (let c = 0; c < dsl.sell.conditions.length; c++) {
+      if (evalCondition(dsl.sell.conditions[c], registry, i)) sell[c]++;
+    }
+  }
+
+  return { buy, sell };
 }

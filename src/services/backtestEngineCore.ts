@@ -10,6 +10,7 @@ import { type StrategyType } from './strategyDefinitions';
 import {
   calcSMA, calcEMA, calcRSI, calcMACD, calcBB,
   calcStochastic, calcADX, calcDonchian, calcCCI, calcWilliamsR,
+  calcATR,
 } from './indicatorService';
 import { generateCustomSignals, type CustomStrategyDSL } from './customStrategyInterpreter';
 
@@ -20,6 +21,8 @@ export interface PureEngineConfig {
   strategyConfig:   Record<string, number | string>;
   customStrategy?:  CustomStrategyDSL;
   startingBalance:  number;
+  // Default volume — used by FIXED sizing mode and as a fallback when a
+  // RISK_BASED or PCT_EQUITY calculation yields an invalid number.
   volume:           number;
   stopLossPct:      number;
   takeProfitRatio:  number;
@@ -27,6 +30,100 @@ export interface PureEngineConfig {
   commission:       number;
   maxOpenPositions: number;
   instrumentType:   string;
+  // Optional prop-firm-challenge rule set. When provided AND enabled, the
+  // engine tracks daily equity, HWM, and trading-day count; on breach it
+  // force-closes all positions and records the breach in ChallengeResult.
+  propFirmRules?:   PropFirmRulesConfig;
+  // Optional position-sizing override. When omitted, FIXED mode is used.
+  sizing?:          SizingConfig;
+}
+
+// ── Position sizing ──────────────────────────────────────────────────────────
+// Replaces fixed-volume entries with a per-trade calculation. The textbook
+// retail risk-management primitive (1% of equity per trade) cannot be
+// expressed under FIXED — you have to compute the right lot size by hand for
+// every instrument and price. RISK_BASED handles it automatically.
+
+export type SizingMode = 'FIXED' | 'PCT_EQUITY' | 'RISK_BASED';
+export type StopSource = 'PCT' | 'ATR';
+
+export interface SizingConfig {
+  mode: SizingMode;
+  // FIXED — uses config.volume directly; no extra fields read.
+  //
+  // PCT_EQUITY — open a notional position worth pctEquity × current equity.
+  // Example: 0.10 on a $10k account at price $100 → $1000 notional → 10 shares
+  // (or 0.01 lots forex at 100,000 multiplier).
+  pctEquity?: number;
+  // RISK_BASED — size so that hitting the stop loses riskPerTrade × equity.
+  // Example: 0.01 (1% risk) on a $10k account with a $0.50 stop and $1/unit
+  // P&L multiplier → volume = $100 / $0.50 = 200 units.
+  riskPerTrade?: number;
+  // RISK_BASED only — how to compute the stop distance for sizing purposes.
+  // 'PCT' (default): stopDistance = entryPrice × config.stopLossPct.
+  // 'ATR': stopDistance = atrMultiplier × ATR(atrPeriod)[entryBar].
+  stopSource?: StopSource;
+  atrPeriod?: number;
+  atrMultiplier?: number;
+}
+
+// ── Prop-firm challenge rules ────────────────────────────────────────────────
+// Mirrors the rule taxonomy used by FTMO, MyForexFunds, TheFundedTrader,
+// FundedNext etc. All rule fields are optional — supply only the ones your
+// challenge enforces. Pass values as fractions, not percentages
+// (0.05 = 5%, not 5).
+
+export interface PropFirmRulesConfig {
+  enabled: boolean;
+  // Daily loss limit as a fraction of START-OF-DAY balance. Breach = FAILED.
+  dailyLossLimitPct?: number;
+  // Static max loss as a fraction of STARTING balance. Breach = FAILED.
+  // (FTMO's "Maximum Loss" rule on Phase 1.)
+  maxLossPct?: number;
+  // Trailing max DD as a fraction of HWM equity. Breach = FAILED.
+  // (FTMO Swing accounts; many MFF programs.)
+  trailingMaxDDPct?: number;
+  // When true, HWM updates only at end-of-day, not intraday. FTMO Swing
+  // accounts use this — it makes the rule materially looser than intraday-HWM.
+  trailingDDEodOnly?: boolean;
+  // Profit target as a fraction of STARTING balance. Required to PASS.
+  profitTargetPct?: number;
+  // Minimum distinct trading days required to PASS even if profit target hit.
+  minTradingDays?: number;
+  // Maximum trading days (challenge expires). 0 / undef = unlimited.
+  maxTradingDays?: number;
+}
+
+export type ChallengeStatus =
+  | 'IN_PROGRESS'   // run ended before pass or fail conditions met
+  | 'PASSED'        // profit target hit AND min trading days satisfied AND no breach
+  | 'FAILED'        // a hard rule was breached
+  | 'EXPIRED';      // maxTradingDays exceeded without pass
+
+export type BreachedRule =
+  | 'DAILY_LOSS'
+  | 'MAX_LOSS'
+  | 'TRAILING_DD'
+  | 'TIME_EXPIRED';
+
+export interface ChallengeResult {
+  enabled: boolean;
+  status: ChallengeStatus;
+  // Set when status === 'FAILED' or 'EXPIRED'.
+  breachedRule?:        BreachedRule;
+  breachDate?:          Date;
+  breachEquity?:        number;
+  breachAtTradeCount?:  number;
+  // Set when profit target was hit (status may still be IN_PROGRESS if
+  // minTradingDays not yet satisfied, or PASSED if both met).
+  profitTargetHitDate?: Date;
+  profitTargetHitEquity?: number;
+  // Always populated.
+  tradingDaysCount:       number;
+  highWaterMark:          number;
+  lowestEquity:           number;
+  maxDailyLossPct:        number; // worst single-day drop observed (fraction)
+  maxDrawdownFromHWMPct:  number; // worst peak-to-trough observed (fraction)
 }
 
 export interface PureCandle {
@@ -45,7 +142,15 @@ export interface OpenPosition {
   stopLoss:   number;
   takeProfit: number;
   volume:     number;
-  slippage:   number;
+  entrySlippage: number;          // price units paid to slippage on entry leg
+  // Equity at the moment this position was opened. Used to denominate pnlPct
+  // against the trade-time balance rather than the original starting balance,
+  // so late-in-run compounded trades aren't squashed in the reported %.
+  equityAtEntry: number;
+  // Running peak/trough of price seen while open — used to compute maximum
+  // adverse / favourable excursion for intra-trade-aware drawdown.
+  peakHigh:   number;
+  peakLow:    number;
 }
 
 export interface PureTradeResult {
@@ -58,9 +163,15 @@ export interface PureTradeResult {
   takeProfit: number;
   pnl:        number;
   pnlPct:     number;
-  commission: number;
-  slippage:   number;
+  commission: number;     // total commission (entry leg + exit leg)
+  slippage:   number;     // total slippage in price units (entry + exit legs)
   ambiguous:  boolean;
+  forceClosed: boolean;   // true when closed at end-of-data, not by SL/TP
+  // Peak unrealised loss/gain in P&L currency units while position was open.
+  // Lets the metrics endpoint compute HWM-to-trough drawdown instead of only
+  // trade-to-trade closing equity.
+  maxAdverse:   number;   // >= 0
+  maxFavorable: number;   // >= 0
   entryAt:    Date;
   exitAt:     Date;
 }
@@ -88,7 +199,14 @@ function calcRawPnl(
     case 'FUTURES': return priceDiff * volume;
     case 'CRYPTO':  return priceDiff * volume;
     case 'CFD':     return priceDiff * volume;
-    default:        return priceDiff * volume * 100000;
+    default:
+      // Refuse to silently apply the forex 100,000x multiplier to unknown
+      // instrument strings (e.g. "STOCK" singular). Would otherwise inflate
+      // reported P&L by 5 orders of magnitude.
+      throw new Error(
+        `Unsupported instrumentType "${instrumentType}". ` +
+        `Expected one of FOREX, STOCKS, FUTURES, CRYPTO, CFD.`,
+      );
   }
 }
 
@@ -383,6 +501,25 @@ export interface RunDiagnostics {
   entriesSkipped: number;   // signal fired but maxOpenPositions or final-bar prevented entry
   forceClosed:    number;   // open positions closed at end of data
   emptyReason?:   string;   // human-readable explanation when closedTrades.length === 0
+  // CUSTOM-strategy only: per-condition fire counts. Lets the trader see
+  // *which* condition is the bottleneck when an ANDed group emits no signals.
+  // Index aligns with dsl.buy.conditions[] and dsl.sell.conditions[] order.
+  customConditionFires?: { buy: number[]; sell: number[] };
+  // True when signal generation was served from the in-process LRU cache.
+  // Lets the UI show "cached" vs "freshly computed" so a trader debugging
+  // strategy stability can tell whether identical results are determinism
+  // or just a cache hit.
+  signalsFromCache?: boolean;
+  // Number of candle bars on which BOTH SL and TP were hit. SL takes priority
+  // but these are tie-breaks — large counts mean the strategy's reported
+  // exits are partly arbitrary.
+  ambiguousExits?: number;
+  // Set when the cached/fetched candle coverage materially undershoots the
+  // requested date range (e.g. Yahoo's 60-day intraday cap silently truncated
+  // a 2-year request).
+  coverageWarning?: string;
+  // Prop-firm challenge result, present only when config.propFirmRules.enabled.
+  challengeResult?: ChallengeResult;
 }
 
 export function runEventLoopPure(
@@ -420,16 +557,183 @@ export function runEventLoopPure(
   let entryAttempts  = 0;
   let entriesTaken   = 0;
   let entriesSkipped = 0;
+  let ambiguousExits = 0;
 
   // Hoist config out of the hot loop.
   const slippagePct      = config.slippagePct;
   const stopLossPct      = config.stopLossPct;
   const takeProfitRatio  = config.takeProfitRatio;
-  const commission       = config.commission;
-  const volume           = config.volume;
-  const startingBalance  = config.startingBalance;
+  // Commission is treated as **per-leg** (charged on entry AND exit) — round-
+  // trip cost = 2 × config.commission. The audit flagged the old single-leg
+  // semantics as half-correct; this matches how brokers actually bill.
+  const commissionPerLeg = config.commission;
+  const defaultVolume    = config.volume;
   const maxOpenPositions = config.maxOpenPositions;
   const instrumentType   = config.instrumentType;
+  const sizing           = config.sizing ?? { mode: 'FIXED' as SizingMode };
+
+  // Pre-compute ATR if RISK_BASED + ATR stop source. Doing it once outside
+  // the loop avoids O(n²) work and matches how indicators are computed for
+  // signal generation.
+  let atrSeries: (number | null)[] | null = null;
+  if (sizing.mode === 'RISK_BASED' && sizing.stopSource === 'ATR') {
+    const period = sizing.atrPeriod ?? 14;
+    atrSeries = calcATR(
+      Array.from(highs),
+      Array.from(lows),
+      Array.from(closes),
+      period,
+    );
+  }
+
+  // Helper: P&L unit per 1 unit of price movement at the DEFAULT (config)
+  // volume. Used to convert price-distance excursions into currency for
+  // MAE/MFE. Note that per-trade volume may differ when RISK_BASED or
+  // PCT_EQUITY sizing is active — but MAE/MFE is reported in currency at
+  // the trade's actual volume below.
+  const pnlPerPriceUnit = calcRawPnl(
+    'BUY',
+    0,
+    1,
+    defaultVolume,
+    instrumentType,
+  );
+
+  // Per-1-unit-of-volume P&L at a 1-unit price move. Lets us convert dollar
+  // risk to volume regardless of instrument multiplier. For FOREX with mult
+  // 100,000 this is 100,000; for STOCKS it is 1.
+  const pnlPerUnitVolume = calcRawPnl('BUY', 0, 1, 1, instrumentType);
+
+  // Compute the entry volume for a new position. Falls back to defaultVolume
+  // (config.volume) on any non-finite result so a misconfigured sizing
+  // block can never silently kill all signals.
+  function computeEntryVolume(
+    _side: 'BUY' | 'SELL',     // accepted for symmetry; sizing is direction-agnostic today
+    entryPrice: number,
+    equity: number,
+    barIndex: number,
+  ): number {
+    if (sizing.mode === 'FIXED') return defaultVolume;
+    if (equity <= 0) return 0;
+
+    if (sizing.mode === 'PCT_EQUITY') {
+      const pct = sizing.pctEquity ?? 0;
+      if (pct <= 0) return defaultVolume;
+      // Notional dollars to deploy → divide by price × multiplier to get volume.
+      const notional = equity * pct;
+      const v = notional / (entryPrice * pnlPerUnitVolume);
+      return Number.isFinite(v) && v > 0 ? v : 0;
+    }
+
+    if (sizing.mode === 'RISK_BASED') {
+      const risk = sizing.riskPerTrade ?? 0;
+      if (risk <= 0) return defaultVolume;
+
+      let stopDistance: number;
+      if (sizing.stopSource === 'ATR' && atrSeries) {
+        const atr = atrSeries[barIndex];
+        if (atr == null || atr <= 0) return 0;
+        stopDistance = (sizing.atrMultiplier ?? 2) * atr;
+      } else {
+        // Default: use config.stopLossPct relative to entry price. Matches
+        // the SL the engine will actually set.
+        stopDistance = entryPrice * stopLossPct;
+      }
+      if (stopDistance <= 0) return 0;
+
+      const dollarRisk = equity * risk;
+      const v = dollarRisk / (stopDistance * pnlPerUnitVolume);
+      return Number.isFinite(v) && v > 0 ? v : 0;
+    }
+
+    return defaultVolume;
+  }
+
+  // ── Prop-firm challenge state ───────────────────────────────────────────
+  // All fields populated only when rules.enabled. Tracking is cheap (a few
+  // numeric comparisons per bar) so the cost when disabled is negligible.
+  const rules = config.propFirmRules;
+  const rulesActive = !!(rules && rules.enabled);
+  let challengeStatus: ChallengeStatus = 'IN_PROGRESS';
+  let breachedRule: BreachedRule | undefined;
+  let breachDate: Date | undefined;
+  let breachEquity: number | undefined;
+  let breachAtTradeCount: number | undefined;
+  let profitTargetHitDate: Date | undefined;
+  let profitTargetHitEquity: number | undefined;
+  let highWaterMark = config.startingBalance;
+  let lowestEquity  = config.startingBalance;
+  let maxDailyLossPct       = 0;
+  let maxDrawdownFromHWMPct = 0;
+  // Distinct trading days = days on which at least one entry or exit occurred.
+  // Tracked via a Set of "YYYY-MM-DD" keys; cheap relative to the candle loop.
+  const tradingDays = new Set<string>();
+  // Day key of the previous candle, for detecting day boundaries.
+  let prevDayKey: string | null = null;
+  let startOfDayEquity = config.startingBalance;
+  // Day count for maxTradingDays — distinct days the loop has SEEN, not just
+  // days with trades. Counted per challenge convention.
+  let calendarDaysSeen = 0;
+  // Cached so the breach-handler block doesn't have to rebuild it for the
+  // last-iteration position-close path.
+  const dayKey = (d: Date): string =>
+    `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, '0')}-${String(d.getUTCDate()).padStart(2, '0')}`;
+
+  // Compute current mark-to-market equity. Realised P&L is in runningBalance;
+  // open positions are marked to the candle's close, with per-leg commission
+  // already accounted for (entry leg charged at open, exit leg charged on close).
+  // Slippage is not modelled on the MTM mark — it's a fill cost, not a holding cost.
+  const currentEquity = (closePrice: number): number => {
+    let eq = runningBalance;
+    for (const pos of openPositions) {
+      eq += calcRawPnl(pos.side, pos.entryPrice, closePrice, pos.volume, instrumentType);
+      // Subtract the exit-leg commission that WOULD be charged if we closed now.
+      // The entry leg was already deducted from runningBalance at entry? No —
+      // currently commission is only deducted at trade close. So mark-to-market
+      // equity here ignores commission entirely, which is consistent with how a
+      // broker shows floating P&L.
+    }
+    return eq;
+  };
+
+  // Force-close every open position at a given price + timestamp. Used on
+  // challenge breach. Returns the number of positions closed.
+  const forceCloseAll = (closePrice: number, atTime: Date): number => {
+    const count = openPositions.length;
+    for (const pos of openPositions) {
+      const rawPnl   = calcRawPnl(pos.side, pos.entryPrice, closePrice, pos.volume, instrumentType);
+      const totalCommission = commissionPerLeg * 2;
+      const finalPnl = rawPnl - totalCommission;
+      runningBalance += finalPnl;
+      const maxAdversePrice = pos.side === 'BUY'
+        ? Math.max(0, pos.entryPrice - pos.peakLow)
+        : Math.max(0, pos.peakHigh - pos.entryPrice);
+      const maxFavorablePrice = pos.side === 'BUY'
+        ? Math.max(0, pos.peakHigh - pos.entryPrice)
+        : Math.max(0, pos.entryPrice - pos.peakLow);
+      closedTrades.push({
+        symbol,
+        side:        pos.side,
+        entryPrice:  pos.entryPrice,
+        exitPrice:   closePrice,
+        volume:      pos.volume,
+        stopLoss:    pos.stopLoss,
+        takeProfit:  pos.takeProfit,
+        pnl:         finalPnl,
+        pnlPct:      (finalPnl / pos.equityAtEntry) * 100,
+        commission:  totalCommission,
+        slippage:    pos.entrySlippage,
+        ambiguous:   false,
+        forceClosed: true,
+        maxAdverse:    maxAdversePrice   * pnlPerPriceUnit,
+        maxFavorable:  maxFavorablePrice * pnlPerPriceUnit,
+        entryAt:     pos.entryAt,
+        exitAt:      atTime,
+      });
+    }
+    openPositions.length = 0;
+    return count;
+  };
 
   let lastProgressTs = Date.now();
   const PROGRESS_THROTTLE_MS = 500;
@@ -447,28 +751,97 @@ export function runEventLoopPure(
     const candleHigh = highs[i];
     const candleLow  = lows[i];
 
+    // ── Step 0: prop-firm day-boundary detection ─────────────────────────
+    // Done BEFORE exit processing so a day-flip closes out the prior day's
+    // EOD-trailing HWM update, and so SOD equity is snapshotted before any
+    // new realized P&L for this day lands.
+    if (rulesActive) {
+      const k = dayKey(openTimes[i]);
+      if (k !== prevDayKey) {
+        // Day flip. The previous day's "end" is i-1's close. If we're using
+        // EOD-only trailing DD, this is when we update HWM for the prior day.
+        if (rules!.trailingDDEodOnly && i > 0) {
+          const prevDayClose = closes[i - 1];
+          const eqAtEod = currentEquity(prevDayClose);
+          if (eqAtEod > highWaterMark) highWaterMark = eqAtEod;
+        }
+        // SOD equity for the new day = prior bar's close-equity, or start
+        // balance at i=0.
+        startOfDayEquity = i === 0 ? config.startingBalance : currentEquity(closes[i - 1]);
+        prevDayKey = k;
+        calendarDaysSeen++;
+
+        // Time-expiry check (EXPIRED status).
+        if (
+          rules!.maxTradingDays != null &&
+          rules!.maxTradingDays > 0 &&
+          calendarDaysSeen > rules!.maxTradingDays
+        ) {
+          challengeStatus    = 'EXPIRED';
+          breachedRule       = 'TIME_EXPIRED';
+          breachDate         = openTimes[i];
+          breachEquity       = currentEquity(closes[i]);
+          breachAtTradeCount = closedTrades.length;
+          forceCloseAll(closes[i], openTimes[i]);
+          break;
+        }
+      }
+    }
+
     // Step 1: in-place exit check (write index <= read index).
     let writeIdx = 0;
     for (let r = 0; r < openPositions.length; r++) {
       const pos = openPositions[r];
+
+      // Track intra-trade excursion against this bar's range before checking
+      // exit, so the recorded MAE/MFE captures the worst/best price seen even
+      // on the exit bar itself.
+      if (candleHigh > pos.peakHigh) pos.peakHigh = candleHigh;
+      if (candleLow  < pos.peakLow ) pos.peakLow  = candleLow;
+
       const exit = checkExit(pos, candleHigh, candleLow);
       if (exit) {
-        const rawPnl   = calcRawPnl(pos.side, pos.entryPrice, exit.exitPrice, pos.volume, instrumentType);
-        const finalPnl = rawPnl - commission;
+        if (exit.ambiguous) ambiguousExits++;
+        // Exit slippage: SL fills can gap through; TP fills can also slip.
+        // Apply the same slippagePct adversely against the position direction,
+        // so the engine no longer assumes best-case fills at the exact SL/TP.
+        const rawExit  = exit.exitPrice;
+        const exitFill = pos.side === 'BUY'
+          ? rawExit * (1 - slippagePct)
+          : rawExit * (1 + slippagePct);
+        const exitSlippagePrice = Math.abs(rawExit - exitFill);
+
+        const rawPnl   = calcRawPnl(pos.side, pos.entryPrice, exitFill, pos.volume, instrumentType);
+        const totalCommission = commissionPerLeg * 2;
+        const finalPnl = rawPnl - totalCommission;
         runningBalance += finalPnl;
+
+        const maxAdversePrice = pos.side === 'BUY'
+          ? Math.max(0, pos.entryPrice - pos.peakLow)
+          : Math.max(0, pos.peakHigh - pos.entryPrice);
+        const maxFavorablePrice = pos.side === 'BUY'
+          ? Math.max(0, pos.peakHigh - pos.entryPrice)
+          : Math.max(0, pos.entryPrice - pos.peakLow);
+
         closedTrades.push({
           symbol,
           side:       pos.side,
           entryPrice: pos.entryPrice,
-          exitPrice:  exit.exitPrice,
+          exitPrice:  exitFill,
           volume:     pos.volume,
           stopLoss:   pos.stopLoss,
           takeProfit: pos.takeProfit,
           pnl:        finalPnl,
-          pnlPct:     (finalPnl / startingBalance) * 100,
-          commission,
-          slippage:   pos.slippage,
+          // Denominate against equity at trade entry, not the original starting
+          // balance. Keeps reported percentages comparable across a compounded
+          // run instead of squashing later trades.
+          pnlPct:     (finalPnl / pos.equityAtEntry) * 100,
+          commission: totalCommission,
+          slippage:   pos.entrySlippage + exitSlippagePrice,
           ambiguous:  exit.ambiguous,
+          forceClosed: false,
+          maxAdverse:   maxAdversePrice   * pnlPerPriceUnit,
+          maxFavorable: maxFavorablePrice * pnlPerPriceUnit,
           entryAt:    pos.entryAt,
           exitAt:     openTimes[i],
         });
@@ -477,6 +850,75 @@ export function runEventLoopPure(
       }
     }
     openPositions.length = writeIdx;
+
+    // ── Step 1.5: prop-firm rule checks ──────────────────────────────────
+    // Done AFTER exits realize and BEFORE new entries open. Equity is marked
+    // to this bar's close including any still-open positions.
+    if (rulesActive) {
+      const eqNow = currentEquity(closes[i]);
+      if (eqNow < lowestEquity) lowestEquity = eqNow;
+
+      // Intraday HWM update (unless EOD-only mode is on).
+      if (!rules!.trailingDDEodOnly && eqNow > highWaterMark) {
+        highWaterMark = eqNow;
+      }
+
+      // Track worst observed daily loss and DD-from-HWM for reporting.
+      if (startOfDayEquity > 0) {
+        const dailyLoss = (startOfDayEquity - eqNow) / startOfDayEquity;
+        if (dailyLoss > maxDailyLossPct) maxDailyLossPct = dailyLoss;
+      }
+      if (highWaterMark > 0) {
+        const ddFromHWM = (highWaterMark - eqNow) / highWaterMark;
+        if (ddFromHWM > maxDrawdownFromHWMPct) maxDrawdownFromHWMPct = ddFromHWM;
+      }
+
+      // Hard rules — first breach wins.
+      let breach: BreachedRule | null = null;
+      if (
+        rules!.dailyLossLimitPct != null &&
+        rules!.dailyLossLimitPct > 0 &&
+        startOfDayEquity > 0 &&
+        (startOfDayEquity - eqNow) / startOfDayEquity >= rules!.dailyLossLimitPct
+      ) {
+        breach = 'DAILY_LOSS';
+      } else if (
+        rules!.maxLossPct != null &&
+        rules!.maxLossPct > 0 &&
+        (config.startingBalance - eqNow) / config.startingBalance >= rules!.maxLossPct
+      ) {
+        breach = 'MAX_LOSS';
+      } else if (
+        rules!.trailingMaxDDPct != null &&
+        rules!.trailingMaxDDPct > 0 &&
+        highWaterMark > 0 &&
+        (highWaterMark - eqNow) / highWaterMark >= rules!.trailingMaxDDPct
+      ) {
+        breach = 'TRAILING_DD';
+      }
+
+      if (breach) {
+        challengeStatus    = 'FAILED';
+        breachedRule       = breach;
+        breachDate         = openTimes[i];
+        breachEquity       = eqNow;
+        breachAtTradeCount = closedTrades.length;
+        forceCloseAll(closes[i], openTimes[i]);
+        break;
+      }
+
+      // Profit-target detection (does NOT terminate — strategy can keep
+      // trading, but we record when the target was first hit).
+      if (
+        !profitTargetHitDate &&
+        rules!.profitTargetPct != null &&
+        rules!.profitTargetPct > 0 &&
+        eqNow >= config.startingBalance * (1 + rules!.profitTargetPct)
+      ) {
+        profitTargetHitDate   = openTimes[i];
+        profitTargetHitEquity = eqNow;
+      }
+    }
 
     // Step 2: entry signal.
     const signal = signals[i];
@@ -489,7 +931,7 @@ export function runEventLoopPure(
         const entryPrice = signal === 'BUY'
           ? rawEntry * (1 + slippagePct)
           : rawEntry * (1 - slippagePct);
-        const slippage = rawEntry * slippagePct;
+        const entrySlippage = Math.abs(rawEntry - entryPrice);
         const stopLoss = signal === 'BUY'
           ? entryPrice * (1 - stopLossPct)
           : entryPrice * (1 + stopLossPct);
@@ -497,16 +939,32 @@ export function runEventLoopPure(
           ? entryPrice * (1 + stopLossPct * takeProfitRatio)
           : entryPrice * (1 - stopLossPct * takeProfitRatio);
 
-        openPositions.push({
-          side:       signal,
-          entryPrice,
-          entryAt:    openTimes[i + 1],
-          stopLoss,
-          takeProfit,
-          volume,
-          slippage,
-        });
-        entriesTaken++;
+        // Compute volume per the sizing config. Uses realised-only equity
+        // (runningBalance) as the base — a conservative choice that ignores
+        // floating P&L on other open positions. For maxOpenPositions=1 (the
+        // default) this is exactly correct.
+        const v = computeEntryVolume(signal, entryPrice, runningBalance, i);
+        if (v <= 0) {
+          // Sizing yielded zero — most often ATR warmup not yet ready.
+          // Count as skipped so the diagnostic explains why no entry landed.
+          entriesSkipped++;
+        } else {
+          openPositions.push({
+            side:       signal,
+            entryPrice,
+            entryAt:    openTimes[i + 1],
+            stopLoss,
+            takeProfit,
+            volume:     v,
+            entrySlippage,
+            equityAtEntry: runningBalance,
+            peakHigh:   entryPrice,
+            peakLow:    entryPrice,
+          });
+          entriesTaken++;
+          // Track distinct entry days for the minTradingDays rule.
+          if (rulesActive) tradingDays.add(dayKey(openTimes[i + 1]));
+        }
       } else {
         entriesSkipped++;
       }
@@ -519,9 +977,20 @@ export function runEventLoopPure(
   const lastOpenTime = openTimes[lastIdx];
   const forceClosed  = openPositions.length;
   for (const pos of openPositions) {
+    // No exit-leg slippage on force-close — we are evaluating mark-to-market
+    // at the last candle, not a real fill against price action.
     const rawPnl   = calcRawPnl(pos.side, pos.entryPrice, lastClose, pos.volume, instrumentType);
-    const finalPnl = rawPnl - commission;
+    const totalCommission = commissionPerLeg * 2;
+    const finalPnl = rawPnl - totalCommission;
     runningBalance += finalPnl;
+
+    const maxAdversePrice = pos.side === 'BUY'
+      ? Math.max(0, pos.entryPrice - pos.peakLow)
+      : Math.max(0, pos.peakHigh - pos.entryPrice);
+    const maxFavorablePrice = pos.side === 'BUY'
+      ? Math.max(0, pos.peakHigh - pos.entryPrice)
+      : Math.max(0, pos.entryPrice - pos.peakLow);
+
     closedTrades.push({
       symbol,
       side:       pos.side,
@@ -531,10 +1000,13 @@ export function runEventLoopPure(
       stopLoss:   pos.stopLoss,
       takeProfit: pos.takeProfit,
       pnl:        finalPnl,
-      pnlPct:     (finalPnl / startingBalance) * 100,
-      commission,
-      slippage:   pos.slippage,
+      pnlPct:     (finalPnl / pos.equityAtEntry) * 100,
+      commission: totalCommission,
+      slippage:   pos.entrySlippage,
       ambiguous:  false,
+      forceClosed: true,
+      maxAdverse:   maxAdversePrice   * pnlPerPriceUnit,
+      maxFavorable: maxFavorablePrice * pnlPerPriceUnit,
       entryAt:    pos.entryAt,
       exitAt:     lastOpenTime,
     });
@@ -549,8 +1021,38 @@ export function runEventLoopPure(
     entriesTaken,
     entriesSkipped,
     forceClosed,
+    ambiguousExits,
   };
   diagnostics.emptyReason = deriveEmptyReason(diagnostics, closedTrades.length, config);
+
+  // Finalize challenge result. If the loop ran to completion without breach,
+  // determine whether the trader passed (target hit + min trading days met)
+  // or simply ran out of runway (IN_PROGRESS = "neither passed nor failed").
+  if (rulesActive) {
+    if (challengeStatus === 'IN_PROGRESS') {
+      const minDaysOk = !rules!.minTradingDays || tradingDays.size >= rules!.minTradingDays;
+      if (profitTargetHitDate && minDaysOk) {
+        challengeStatus = 'PASSED';
+      }
+    }
+    diagnostics.challengeResult = {
+      enabled:               true,
+      status:                challengeStatus,
+      breachedRule,
+      breachDate,
+      breachEquity:          breachEquity != null ? parseFloat(breachEquity.toFixed(2)) : undefined,
+      breachAtTradeCount,
+      profitTargetHitDate,
+      profitTargetHitEquity: profitTargetHitEquity != null ? parseFloat(profitTargetHitEquity.toFixed(2)) : undefined,
+      tradingDaysCount:      tradingDays.size,
+      highWaterMark:         parseFloat(highWaterMark.toFixed(2)),
+      lowestEquity:          parseFloat(lowestEquity.toFixed(2)),
+      // Stored as percentage (0-100) to match the rest of the metrics
+      // surface; the input config uses fractions (0.05 = 5%).
+      maxDailyLossPct:       parseFloat((maxDailyLossPct * 100).toFixed(2)),
+      maxDrawdownFromHWMPct: parseFloat((maxDrawdownFromHWMPct * 100).toFixed(2)),
+    };
+  }
 
   return { closedTrades, finalBalance: runningBalance, diagnostics };
 }

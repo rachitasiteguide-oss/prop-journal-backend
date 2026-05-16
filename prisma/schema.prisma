@@ -41,6 +41,8 @@ model User {
   strategies        Strategy[]
   routines          Routine[]
   backtestSessions  BacktestSession[]
+  backtestSweeps    BacktestSweep[]
+  backtestWalkForwards BacktestWalkForward[]
   savedStrategies   SavedStrategy[]
   passwordResetTokens PasswordResetToken[]
 
@@ -508,6 +510,8 @@ model BacktestSession {
   updatedAt       DateTime       @updatedAt
 
   trades          BacktestTrade[]
+  sweeps          BacktestSweep[]
+  walkForwards    BacktestWalkForward[]
 
   @@index([userId])
   @@map("backtest_sessions")
@@ -527,10 +531,22 @@ model BacktestTrade {
   takeProfit  Float?
   pnl         Float?          // net P&L after commission deduction
   pnlPct      Float?          // pnl / startingBalance × 100
-  commission  Float           @default(0)  // per-trade commission applied at close
-  slippage    Float           @default(0)  // slippage applied at entry (in price units)
+  // Total commission charged on the trade (sum of entry + exit legs).
+  commission  Float           @default(0)
+  // Total slippage paid (entry leg + exit leg, in price units).
+  slippage    Float           @default(0)
   // True when both SL and TP were crossed on the same candle; SL takes priority.
   ambiguous   Boolean         @default(false)
+  // True when the position was closed at end-of-data instead of by SL/TP.
+  // These exits are artefacts of the run window and should not be counted as
+  // strategy decisions when judging win rate / profit factor.
+  forceClosed Boolean         @default(false)
+  // Maximum adverse excursion in price units (peak unrealised loss while open).
+  // Used by intra-trade-aware drawdown so MDD reflects HWM-to-trough equity,
+  // not just trade-to-trade closing equity.
+  maxAdverse  Float           @default(0)
+  // Maximum favourable excursion in price units (peak unrealised gain while open).
+  maxFavorable Float          @default(0)
   status      TradeStatus     @default(OPEN)
   entryAt     DateTime
   exitAt      DateTime?
@@ -541,6 +557,89 @@ model BacktestTrade {
 
   @@index([sessionId])
   @@map("backtest_trades")
+}
+
+// ── Parameter sweeps ──────────────────────────────────────────────────────────
+// A sweep runs the engine N times with one strategy parameter perturbed
+// across a range of values, collects summary metrics, and stores them as
+// JSON. The original session row is the "parent" — sweep config (timeframe,
+// strategy type, risk params) is read from it, then overridden per-iteration
+// for the axis parameter. We store summary metrics only, NOT per-trade
+// records, otherwise a 50-iteration sweep would balloon the trades table.
+
+enum SweepStatus {
+  PENDING
+  RUNNING
+  COMPLETED
+  FAILED
+}
+
+model BacktestSweep {
+  id              String          @id @default(cuid())
+  userId          String
+  user            User            @relation(fields: [userId], references: [id], onDelete: Cascade)
+  // Session whose config was used as the base. Each iteration substitutes one
+  // parameter from `axis` into the base config and runs the engine.
+  parentSessionId String
+  parentSession   BacktestSession @relation(fields: [parentSessionId], references: [id], onDelete: Cascade)
+
+  // { paramKey: string, values: number[] } — the axis being swept.
+  axis            Json
+  // Strategy + risk config carried into every iteration (sans axis param).
+  baseConfig      Json
+
+  status          SweepStatus     @default(PENDING)
+  progress        Int             @default(0)
+  // Array of { paramValue, metrics: {…}, tradeCount } per completed iteration.
+  results         Json?
+  runError        String?
+
+  startedAt       DateTime?
+  completedAt     DateTime?
+  createdAt       DateTime        @default(now())
+
+  @@index([userId])
+  @@index([parentSessionId])
+  @@map("backtest_sweeps")
+}
+
+// ── Walk-forward analysis ─────────────────────────────────────────────────────
+// Splits the date range into N windows; on each window's IS portion runs a
+// parameter sweep and selects the best param by configured metric; then runs
+// that param on the OOS portion. Reports per-window IS vs OOS and aggregate
+// stats (avg OOS Sharpe, IS→OOS decay, overfit flag) so the trader can see
+// whether the strategy's edge survives out-of-sample.
+
+model BacktestWalkForward {
+  id              String          @id @default(cuid())
+  userId          String
+  user            User            @relation(fields: [userId], references: [id], onDelete: Cascade)
+  parentSessionId String
+  parentSession   BacktestSession @relation(fields: [parentSessionId], references: [id], onDelete: Cascade)
+
+  // Sweep axis (same shape as BacktestSweep.axis).
+  axis            Json
+  // Base strategy + risk config; axis paramKey is overridden per-iteration.
+  baseConfig      Json
+  // { windows: int, isRatio: float, selectionMetric: 'sharpe' | 'totalPnl' | 'profitFactor' }
+  windowsConfig   Json
+
+  status          SweepStatus     @default(PENDING)
+  progress        Int             @default(0)
+  // Array of per-window results — each contains IS sweep results, IS-best
+  // param, and OOS metrics for that param.
+  results         Json?
+  // Cross-window aggregate stats: avg IS vs OOS, decay, consistency, overfit.
+  aggregate       Json?
+  runError        String?
+
+  startedAt       DateTime?
+  completedAt     DateTime?
+  createdAt       DateTime        @default(now())
+
+  @@index([userId])
+  @@index([parentSessionId])
+  @@map("backtest_walkforwards")
 }
 
 // ── Saved custom strategies ───────────────────────────────────────────────────
@@ -576,6 +675,12 @@ model Candle {
   high      Float
   low       Float
   close     Float
+  // Yahoo Finance split/dividend-adjusted close. Nullable for backward
+  // compatibility with rows cached before adjustment was tracked, and for
+  // instruments where Yahoo does not return an adjusted series (e.g. FX).
+  // Stock backtests apply adjClose/close as a back-adjustment ratio across
+  // OHLC to neutralise split-day phantom gaps.
+  adjClose  Float?
   volume    Float    @default(0)
 
   @@unique([symbol, timeframe, openTime])

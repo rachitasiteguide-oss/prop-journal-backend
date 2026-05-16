@@ -85,8 +85,14 @@ export function normalizeYFSymbol(symbol: string, instrumentType: string): strin
       return lettersOnly.slice(0, 6) + '=X';
     case 'CRYPTO':
       return s.includes('-') ? s : `${s}-USD`;
+    case 'STOCKS':
+      // Preserve dots and dashes — Yahoo uses them for class shares and
+      // exchange suffixes (BRK.B, BF.A, RY.TO, 7203.T). Stripping non-letters
+      // would silently turn BRK.B into BRKB and Yahoo would 404.
+      // Strip whitespace only (already done above) and keep letters/digits/.-/^.
+      return s.replace(/[^A-Z0-9.\-^]/g, '');
     default:
-      // STOCKS, FUTURES, CFD, OPTIONS — strip slashes/punctuation but keep as-is
+      // FUTURES, CFD, OPTIONS — strip slashes/punctuation but keep as-is
       return lettersOnly || s;
   }
 }
@@ -163,7 +169,23 @@ export async function fetchAndCacheCandles(
   });
   const floor = expectedCandleFloor(timeframe, from, to);
 
-  if (existing >= floor) {
+  // For stocks we additionally require adjClose to be populated. Rows cached
+  // before adjusted-close tracking was added have adjClose=null; refetch so
+  // split/dividend back-adjustment can be applied at read time.
+  let needsAdjBackfill = false;
+  if (instrumentType === 'STOCKS' && existing >= floor) {
+    const missingAdj = await prisma.candle.count({
+      where: { symbol, timeframe, openTime: { gte: from, lte: to }, adjClose: null },
+    });
+    needsAdjBackfill = missingAdj > 0;
+    if (needsAdjBackfill) {
+      logger.info(
+        `Cache has ${existing} stock candles for ${symbol}/${timeframe} but ${missingAdj} lack adjClose; refetching.`,
+      );
+    }
+  }
+
+  if (existing >= floor && !needsAdjBackfill) {
     logger.info(`Candle cache hit: ${symbol}/${timeframe} (${existing} candles, need ≥${floor})`);
     return;
   }
@@ -229,18 +251,20 @@ export async function fetchAndCacheCandles(
             symbol,
             timeframe,
             openTime: q.date,
-            open:   q.open!,
-            high:   q.high!,
-            low:    q.low!,
-            close:  q.close!,
-            volume: q.volume ?? 0,
+            open:     q.open!,
+            high:     q.high!,
+            low:      q.low!,
+            close:    q.close!,
+            adjClose: q.adjclose ?? null,
+            volume:   q.volume ?? 0,
           },
           update: {
-            open:   q.open!,
-            high:   q.high!,
-            low:    q.low!,
-            close:  q.close!,
-            volume: q.volume ?? 0,
+            open:     q.open!,
+            high:     q.high!,
+            low:      q.low!,
+            close:    q.close!,
+            adjClose: q.adjclose ?? null,
+            volume:   q.volume ?? 0,
           },
         }),
       ),
@@ -278,5 +302,24 @@ export async function getCandles(
   to: Date,
 ) {
   await fetchAndCacheCandles(symbol, instrumentType, timeframe, from, to);
-  return getCachedCandles(symbol, timeframe, from, to);
+  const rows = await getCachedCandles(symbol, timeframe, from, to);
+
+  // Stocks only: back-adjust OHLC by the adjClose/close ratio so splits and
+  // dividends do not produce phantom gap signals (e.g. AAPL 2020-08-31 4-for-1
+  // would otherwise look like a -75% bar to every breakout/MA strategy).
+  // Forex/futures/crypto do not have corporate actions — return rows as-is.
+  if (instrumentType !== 'STOCKS') return rows;
+
+  return rows.map((c) => {
+    if (c.adjClose == null || c.close === 0) return c;
+    const ratio = c.adjClose / c.close;
+    if (ratio === 1) return c;
+    return {
+      ...c,
+      open:  c.open  * ratio,
+      high:  c.high  * ratio,
+      low:   c.low   * ratio,
+      close: c.adjClose,
+    };
+  });
 }

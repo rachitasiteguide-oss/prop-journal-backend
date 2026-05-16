@@ -17,11 +17,12 @@ import { AppError } from '../middlewares/errorHandler';
 import { logger } from '../utils/logger';
 import { getCandles } from './candleService';
 import { type StrategyType } from './strategyDefinitions';
-import { type CustomStrategyDSL } from './customStrategyInterpreter';
+import { type CustomStrategyDSL, analyzeCustomDslConditionFires } from './customStrategyInterpreter';
 import { getCachedSignals, setCachedSignals } from './signalCache';
 import {
   generateSignalsPure, runEventLoopPure, minCandlesRequired,
   type PureCandle, type PureTradeResult, type Signal, type RunDiagnostics,
+  type PropFirmRulesConfig, type SizingConfig,
 } from './backtestEngineCore';
 import type { Prisma } from '@prisma/client';
 import type { WorkerMessage } from './backtestWorker';
@@ -40,6 +41,12 @@ export interface EngineConfig {
   commission:       number;        // deducted at close (Rule 4)
   maxOpenPositions: number;
   instrumentType:   string;
+  // Optional prop-firm-challenge config. When provided and enabled, the
+  // engine tracks daily/trailing DD, profit target, and trading-day count;
+  // on breach it force-closes and records the breach in challengeResult.
+  propFirmRules?:   PropFirmRulesConfig;
+  // Optional position-sizing override. Omitted = FIXED (use config.volume).
+  sizing?:          SizingConfig;
 }
 
 // ── Worker / inline dispatch ──────────────────────────────────────────────────
@@ -125,8 +132,9 @@ function runEngineInWorker(
 
 // Inline fallback — same compute path the worker uses, just on the main
 // thread. Used by tests (vitest can't easily resolve dist/) and by any
-// operator who set BACKTEST_INLINE=1.
-function runEngineInline(
+// operator who set BACKTEST_INLINE=1. Exported so the sweep engine can
+// reuse it without going through the DB-write path of runAutomatedBacktest.
+export function runEngineInline(
   candles:       PureCandle[],
   cachedSignals: Signal[] | null,
   config:        EngineConfig,
@@ -237,8 +245,45 @@ export async function runAutomatedBacktest(
       ? await runEngineInWorker(candles, cachedSignals, config, session.symbol, onProgress)
       : runEngineInline    (candles, cachedSignals, config, session.symbol, onProgress);
 
-    // 9. Populate the cache on miss.
+    // 9. Populate the cache on miss; flag the hit/miss so the UI can show
+    //    "cached" vs "freshly computed" when a trader is debugging strategy
+    //    stability (identical-looking results may be cache hits rather than
+    //    real determinism).
+    diagnostics.signalsFromCache = !!cachedSignals;
     if (!cachedSignals) setCachedSignals(cacheKeyParts, signals);
+
+    // 9b. CUSTOM strategies: attach per-condition fire counts so the trader
+    //     can see which individual condition is the bottleneck when an ANDed
+    //     group emits no signals. The worker doesn't have the DSL serialised
+    //     back from the result, so we compute on the main thread.
+    if (config.strategyType === 'CUSTOM' && config.customStrategy) {
+      diagnostics.customConditionFires = analyzeCustomDslConditionFires(
+        candles, config.customStrategy,
+      );
+    }
+
+    // 9c. Coverage check: Yahoo Finance silently truncates intraday requests
+    //     past its lookback limit (e.g. 60 days for M30). If the candle
+    //     window the engine actually saw is materially shorter than the
+    //     requested session range, flag it so the trader knows reported P&L
+    //     reflects a shorter horizon than they configured.
+    if (candles.length > 0) {
+      const firstBar = candles[0].openTime.getTime();
+      const lastBar  = candles[candles.length - 1].openTime.getTime();
+      const reqStart = session.startDate.getTime();
+      const reqEnd   = session.endDate.getTime();
+      const reqSpan  = Math.max(1, reqEnd - reqStart);
+      const gotSpan  = lastBar - firstBar;
+      const coverage = gotSpan / reqSpan;
+      if (coverage < 0.85) {
+        const fmt = (t: number) => new Date(t).toISOString().slice(0, 10);
+        diagnostics.coverageWarning =
+          `Candle data covers ${fmt(firstBar)}…${fmt(lastBar)} ` +
+          `(${(coverage * 100).toFixed(0)}% of requested ${fmt(reqStart)}…${fmt(reqEnd)}). ` +
+          `Yahoo Finance limits intraday history (M30/M15: 60 days, H1: 730 days). ` +
+          `Reported P&L reflects only the covered window.`;
+      }
+    }
 
     // 10. Persist all trades in one batch.
     if (closedTrades.length > 0) {
@@ -254,12 +299,15 @@ export async function runAutomatedBacktest(
           takeProfit: t.takeProfit,
           pnl:        parseFloat(t.pnl.toFixed(2)),
           pnlPct:     parseFloat(t.pnlPct.toFixed(4)),
-          commission: t.commission,
-          slippage:   t.slippage,
-          ambiguous:  t.ambiguous,
-          status:     'CLOSED' as const,
-          entryAt:    t.entryAt,
-          exitAt:     t.exitAt,
+          commission:   t.commission,
+          slippage:     t.slippage,
+          ambiguous:    t.ambiguous,
+          forceClosed:  t.forceClosed,
+          maxAdverse:   parseFloat(t.maxAdverse.toFixed(2)),
+          maxFavorable: parseFloat(t.maxFavorable.toFixed(2)),
+          status:       'CLOSED' as const,
+          entryAt:      t.entryAt,
+          exitAt:       t.exitAt,
         })),
       });
     }

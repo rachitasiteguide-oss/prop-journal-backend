@@ -2,11 +2,15 @@ import { Request, Response, NextFunction } from 'express';
 import { z } from 'zod';
 import * as svc from '../services/backtestService';
 import { STRATEGY_CATALOG } from '../services/strategyDefinitions';
+import { validateCustomStrategyDsl, type CustomStrategyDSL } from '../services/customStrategyInterpreter';
+
+export const INSTRUMENT_TYPES = ['FOREX', 'STOCKS', 'FUTURES', 'CRYPTO', 'CFD'] as const;
+const instrumentTypeSchema = z.enum(INSTRUMENT_TYPES);
 
 const createSessionSchema = z.object({
   name:            z.string().min(1).max(120),
   symbol:          z.string().min(1).max(20),
-  instrumentType:  z.string().optional(),
+  instrumentType:  instrumentTypeSchema.optional(),
   startDate:       z.string().datetime(),
   endDate:         z.string().datetime(),
   startingBalance: z.number().positive().optional(),
@@ -178,6 +182,7 @@ const customRuleGroupSchema = z.object({
   conditions: z.array(customConditionSchema).max(10),
 });
 const customStrategySchema = z.object({
+  version:     z.number().int().positive().optional(),
   name:        z.string().min(1).max(120),
   description: z.string().max(500).optional(),
   indicators:  z.array(z.object({
@@ -190,7 +195,36 @@ const customStrategySchema = z.object({
 }).refine(
   (d) => d.buy.conditions.length + d.sell.conditions.length > 0,
   { message: 'Custom strategy must have at least one buy or sell condition.' },
-);
+).superRefine((d, ctx) => {
+  const errors = validateCustomStrategyDsl(d as unknown as CustomStrategyDSL);
+  for (const message of errors) ctx.addIssue({ code: z.ZodIssueCode.custom, message });
+});
+
+// Prop-firm-challenge rule set (FTMO / MFF / FundedNext style). All fields
+// are optional — the trader supplies only the rules their challenge enforces.
+// Percent values are FRACTIONS (0.05 = 5%, not 5).
+// Position-sizing config. FIXED uses the top-level `volume`; PCT_EQUITY and
+// RISK_BASED derive volume per-entry. Limits are deliberately loose — the
+// engine handles bad inputs by falling back to FIXED or 0.
+const sizingSchema = z.object({
+  mode:          z.enum(['FIXED', 'PCT_EQUITY', 'RISK_BASED']),
+  pctEquity:     z.number().min(0).max(1.0).optional(),
+  riskPerTrade:  z.number().min(0).max(0.5).optional(),
+  stopSource:    z.enum(['PCT', 'ATR']).optional(),
+  atrPeriod:     z.number().int().min(2).max(200).optional(),
+  atrMultiplier: z.number().min(0.1).max(20).optional(),
+});
+
+const propFirmRulesSchema = z.object({
+  enabled:           z.boolean(),
+  dailyLossLimitPct: z.number().min(0).max(0.5).optional(),
+  maxLossPct:        z.number().min(0).max(0.5).optional(),
+  trailingMaxDDPct:  z.number().min(0).max(0.5).optional(),
+  trailingDDEodOnly: z.boolean().optional(),
+  profitTargetPct:   z.number().min(0).max(1.0).optional(),
+  minTradingDays:    z.number().int().min(0).max(365).optional(),
+  maxTradingDays:    z.number().int().min(0).max(365).optional(),
+});
 
 const runSchema = z.object({
   timeframe:        z.enum(['D1', 'W1', 'H1', 'M30', 'M15']),
@@ -203,6 +237,8 @@ const runSchema = z.object({
   slippagePct:      z.number().min(0).max(0.05).default(0),
   commission:       z.number().min(0).max(100).default(0),
   maxOpenPositions: z.number().int().min(1).max(5).default(1),
+  propFirmRules:    propFirmRulesSchema.optional(),
+  sizing:           sizingSchema.optional(),
 });
 // Note: when strategyType is CUSTOM, customStrategy may be omitted in the
 // body — the service falls back to the DSL persisted on the session from a

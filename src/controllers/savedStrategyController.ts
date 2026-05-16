@@ -1,6 +1,7 @@
 import { Request, Response, NextFunction } from 'express';
 import { z } from 'zod';
 import * as svc from '../services/savedStrategyService';
+import { validateCustomStrategyDsl, type CustomStrategyDSL } from '../services/customStrategyInterpreter';
 
 const conditionSchema = z.object({
   left:  z.string().min(1),
@@ -21,6 +22,7 @@ const indicatorDefSchema = z.object({
 });
 
 const definitionSchema = z.object({
+  version:     z.number().int().positive().optional(),
   name:        z.string().min(1).max(120),
   description: z.string().max(500).optional(),
   indicators:  z.array(indicatorDefSchema).max(20),
@@ -29,7 +31,10 @@ const definitionSchema = z.object({
 }).refine(
   (d) => d.buy.conditions.length + d.sell.conditions.length > 0,
   { message: 'Strategy must have at least one buy or sell condition.' },
-);
+).superRefine((d, ctx) => {
+  const errors = validateCustomStrategyDsl(d as unknown as CustomStrategyDSL);
+  for (const message of errors) ctx.addIssue({ code: z.ZodIssueCode.custom, message });
+});
 
 const createSchema = z.object({
   name:        z.string().min(1).max(120),

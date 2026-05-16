@@ -14,6 +14,7 @@ import {
   notFoundHandler,
   globalErrorHandler,
 } from "./middlewares/errorHandler";
+import { startOrphanRunSweeper, stopOrphanRunSweeper } from "./services/orphanRunSweeper";
 
 const app = express();
 
@@ -86,6 +87,10 @@ async function bootstrap(): Promise<void> {
     );
   });
 
+  // Sweep any backtest sessions stuck in RUNNING from a previous process,
+  // and keep sweeping every minute for runs that hang past the timeout.
+  startOrphanRunSweeper();
+
   setInterval(async () => {
     try {
       await connectDB();
@@ -104,6 +109,7 @@ async function bootstrap(): Promise<void> {
   // Graceful shutdown
   const shutdown = async (signal: string): Promise<void> => {
     logger.info(`${signal} received — shutting down gracefully`);
+    stopOrphanRunSweeper();
     server.close(async () => {
       await disconnectDB();
       logger.info("Database disconnected. Goodbye.");

@@ -66,8 +66,15 @@ describe('normalizeYFSymbol', () => {
     expect(normalizeYFSymbol('XPD/USD', 'CFD')).toBe('PA=F');
   });
 
-  it('STOCKS: strips slashes/punctuation defensively', () => {
-    expect(normalizeYFSymbol('BRK/B', 'STOCKS')).toBe('BRKB');
+  it('STOCKS: preserves dots and dashes (Yahoo class-share/exchange syntax)', () => {
+    expect(normalizeYFSymbol('BRK.B', 'STOCKS')).toBe('BRK.B');
+    expect(normalizeYFSymbol('RY.TO', 'STOCKS')).toBe('RY.TO');
+    expect(normalizeYFSymbol('BF-A',  'STOCKS')).toBe('BF-A');
+  });
+
+  it('STOCKS: still strips truly invalid characters (slashes, spaces)', () => {
+    expect(normalizeYFSymbol('BRK/B',  'STOCKS')).toBe('BRKB');
+    expect(normalizeYFSymbol(' AAPL ', 'STOCKS')).toBe('AAPL');
   });
 });
 

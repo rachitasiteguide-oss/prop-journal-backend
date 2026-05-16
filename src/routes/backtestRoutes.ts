@@ -10,6 +10,10 @@ import {
   listSavedStrategiesHandler, getSavedStrategyHandler,
   createSavedStrategyHandler, updateSavedStrategyHandler, deleteSavedStrategyHandler,
 } from '../controllers/savedStrategyController';
+import {
+  createSweepHandler, getSweepHandler, listSweepsHandler,
+  createWalkForwardHandler, getWalkForwardHandler, listWalkForwardsHandler,
+} from '../controllers/sweepController';
 
 const router = Router();
 router.use(requireAuth);
@@ -33,6 +37,16 @@ router.get('/strategies',              getStrategyCatalogHandler);
 router.post('/sessions/:id/run',       runSessionHandler);
 router.get('/sessions/:id/run/status', getRunStatusHandler);
 router.get('/sessions/:id/candles',    getSessionCandlesHandler);
+
+// ── Parameter sweeps ──────────────────────────────────────────────────────────
+router.post('/sessions/:id/sweep',   createSweepHandler);
+router.get('/sessions/:id/sweeps',   listSweepsHandler);
+router.get('/sweeps/:id',            getSweepHandler);
+
+// ── Walk-forward analysis ─────────────────────────────────────────────────────
+router.post('/sessions/:id/walkforward',   createWalkForwardHandler);
+router.get('/sessions/:id/walkforwards',   listWalkForwardsHandler);
+router.get('/walkforwards/:id',            getWalkForwardHandler);
 
 // ── Saved custom strategies ───────────────────────────────────────────────────
 router.get('/custom-strategies',          listSavedStrategiesHandler);

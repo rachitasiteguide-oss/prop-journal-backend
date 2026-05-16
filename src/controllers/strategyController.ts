@@ -3,6 +3,7 @@ import { z } from 'zod';
 import { Prisma } from '@prisma/client';
 import { prisma } from '../config/db';
 import { AppError } from '../middlewares/errorHandler';
+import { validateCustomStrategyDsl, type CustomStrategyDSL } from '../services/customStrategyInterpreter';
 
 // ─── Validation schemas ────────────────────────────────────────────────────────
 
@@ -29,6 +30,9 @@ const indicatorDefSchema = z.object({
   params: z.record(z.number()).optional(),
 });
 const definitionSchema = z.object({
+  // DSL schema version. Optional for back-compat with rows persisted before
+  // this field existed (treated as v1).
+  version:     z.number().int().positive().optional(),
   name:        z.string().min(1).max(120),
   description: z.string().max(500).optional(),
   indicators:  z.array(indicatorDefSchema).max(20),
@@ -37,7 +41,12 @@ const definitionSchema = z.object({
 }).refine(
   (d) => d.buy.conditions.length + d.sell.conditions.length > 0,
   { message: 'Strategy must have at least one buy or sell condition.' },
-);
+).superRefine((d, ctx) => {
+  // Catch unknown id references, reserved-name collisions, and all-numeric ids
+  // at save time so the engine never has to silently emit zero signals.
+  const errors = validateCustomStrategyDsl(d as unknown as CustomStrategyDSL);
+  for (const message of errors) ctx.addIssue({ code: z.ZodIssueCode.custom, message });
+});
 
 const createStrategySchema = z.object({
   name:        z.string().min(1).max(100),

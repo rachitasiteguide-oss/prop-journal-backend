@@ -167,7 +167,7 @@ describe('backtestEngine', () => {
     expect(Number(sellTrade.entryPrice)).toBeCloseTo(rawSellOpen * 0.999, 6);
   });
 
-  it('Rule 4 — commission deducted at close: pnl = rawPnl − commission', async () => {
+  it('Rule 4 — commission charged per leg: total = 2 × config.commission', async () => {
     const candles = buildBuyCrossoverCandles();
     // Flatten all candles from entry onward to the same price so rawPnl=0.
     const entryOpen = 110;
@@ -179,8 +179,9 @@ describe('backtestEngine', () => {
     await runAutomatedBacktest('user1', 'session1', { ...BASE_CONFIG, commission: 5 });
 
     const trade = getCreatedTrades()[0];
-    expect(Number(trade.commission)).toBe(5);
-    expect(Number(trade.pnl)).toBeCloseTo(-5);  // rawPnl=0, finalPnl=0−5=−5
+    // Per-leg semantics: 5 on entry + 5 on exit = 10 round-trip.
+    expect(Number(trade.commission)).toBe(10);
+    expect(Number(trade.pnl)).toBeCloseTo(-10);  // rawPnl=0, finalPnl=0−10=−10
   });
 
   it('Rule 5 — last-candle force-close exits at final candle close', async () => {

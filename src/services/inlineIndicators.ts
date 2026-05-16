@@ -54,6 +54,13 @@ export function calcEMAInline(values: number[], period: number): (number | null)
 // RSI output to 2 decimal places (parseFloat(x.toFixed(2))). We replicate
 // that step so existing strategies — which may have been calibrated against
 // the library's rounded output — keep identical signal timing.
+//
+// Quantising to 2 decimals shifts CROSSES_ABOVE/CROSSES_BELOW fills by up to
+// one bar around threshold values (e.g. true RSI 30.001 → 30.005 stays at
+// 30.00 then jumps to 30.01). For mean-reversion strategies whose edge lives
+// at threshold crossings this matters. Set `rounded=false` to get the raw
+// smoothed value — flag is wired through to the DSL via the `rsiPrecision`
+// indicator param ("rounded" | "full").
 function rsiRound2(v: number): number {
   return parseFloat(v.toFixed(2));
 }
@@ -61,7 +68,7 @@ function rsiRound2(v: number): number {
 // Wilder's RSI (the variant used by the `technicalindicators` package).
 // First non-null slot is index `period` (one warmup more than SMA/EMA
 // because RSI consumes deltas, not raw values).
-export function calcRSIInline(values: number[], period: number): (number | null)[] {
+export function calcRSIInline(values: number[], period: number, rounded = true): (number | null)[] {
   const n = values.length;
   const out: (number | null)[] = new Array(n).fill(null);
   if (period <= 0 || n <= period) return out;
@@ -76,9 +83,10 @@ export function calcRSIInline(values: number[], period: number): (number | null)
   }
   let avgGain = gainSum / period;
   let avgLoss = lossSum / period;
+  const finalise = rounded ? rsiRound2 : (v: number) => v;
   out[period] = avgLoss === 0
     ? 100
-    : rsiRound2(100 - 100 / (1 + avgGain / avgLoss));
+    : finalise(100 - 100 / (1 + avgGain / avgLoss));
 
   // Wilder smoothing for the rest. Each step uses the previous averages
   // weighted (period-1)/period plus the current gain/loss weighted 1/period.
@@ -91,7 +99,7 @@ export function calcRSIInline(values: number[], period: number): (number | null)
     avgLoss = (avgLoss * (period - 1) + loss) / period;
     out[i] = avgLoss === 0
       ? 100
-      : rsiRound2(100 - 100 / (1 + avgGain / avgLoss));
+      : finalise(100 - 100 / (1 + avgGain / avgLoss));
   }
   return out;
 }
