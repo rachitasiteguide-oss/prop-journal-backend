@@ -15,6 +15,7 @@ import {
   globalErrorHandler,
 } from "./middlewares/errorHandler";
 import { startOrphanRunSweeper, stopOrphanRunSweeper } from "./services/orphanRunSweeper";
+import { startWeeklyReviewScheduler, stopWeeklyReviewScheduler } from "./services/weeklyReviewScheduler";
 
 const app = express();
 
@@ -91,6 +92,9 @@ async function bootstrap(): Promise<void> {
   // and keep sweeping every minute for runs that hang past the timeout.
   startOrphanRunSweeper();
 
+  // Weekly AI review emails — fires once/week (Mon 13:00 UTC).
+  startWeeklyReviewScheduler();
+
   setInterval(async () => {
     try {
       await connectDB();
@@ -110,6 +114,7 @@ async function bootstrap(): Promise<void> {
   const shutdown = async (signal: string): Promise<void> => {
     logger.info(`${signal} received — shutting down gracefully`);
     stopOrphanRunSweeper();
+    stopWeeklyReviewScheduler();
     server.close(async () => {
       await disconnectDB();
       logger.info("Database disconnected. Goodbye.");

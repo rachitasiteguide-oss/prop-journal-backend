@@ -23,6 +23,14 @@ const envSchema = z.object({
   SMTP_PASS: z.string().optional(),
   EMAIL_FROM: z.string().default('Prop Journal <noreply@propjournal.app>'),
 
+  // AI trade coach. Anthropic = production (Claude Haiku), Groq = free testing
+  // tier. If neither key is set the service falls back to a deterministic
+  // rule-based analyzer so the feature still works offline / in tests.
+  ANTHROPIC_API_KEY: z.string().optional(),
+  ANTHROPIC_MODEL: z.string().default('claude-haiku-4-5-20251001'),
+  GROQ_API_KEY: z.string().optional(),
+  GROQ_MODEL: z.string().default('llama-3.3-70b-versatile'),
+
   COOKIE_SECURE: z
     .string()
     .transform((v) => v === 'true')

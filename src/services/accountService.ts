@@ -18,6 +18,88 @@ export async function getAccounts(userId: string) {
   });
 }
 
+// ── Multi-account unified overview ────────────────────────────────────────────
+// Aggregates P&L and status across every active account a user holds into one
+// portfolio view. Computed from whatever trades currently exist (manual entry
+// today; broker-sync / file-import feeds will populate the same shape once
+// those ingestion tasks land — no change needed here).
+
+export interface AccountOverview {
+  id: string;
+  name: string;
+  broker: string | null;
+  accountType: AccountType;
+  currency: string;
+  balance: number;
+  netPnL: number;
+  equity: number; // balance + netPnL
+  closedTrades: number;
+  openTrades: number;
+  winRate: number; // 0-100
+}
+
+export interface PortfolioOverview {
+  accounts: AccountOverview[];
+  totals: {
+    accounts: number;
+    balance: number;
+    netPnL: number;
+    equity: number;
+    closedTrades: number;
+    openTrades: number;
+    winRate: number;
+  };
+}
+
+export async function getAccountsOverview(userId: string): Promise<PortfolioOverview> {
+  const accounts = await prisma.account.findMany({
+    where: { userId, isActive: true },
+    orderBy: { createdAt: 'asc' },
+    select: {
+      ...ACCOUNT_SELECT,
+      trades: { select: { pnl: true, status: true } },
+    },
+  });
+
+  const rows: AccountOverview[] = accounts.map((a) => {
+    const closed = a.trades.filter((t) => t.status === 'CLOSED' && t.pnl !== null);
+    const wins = closed.filter((t) => (t.pnl ?? 0) > 0).length;
+    const netPnL = closed.reduce((s, t) => s + (t.pnl ?? 0), 0);
+    return {
+      id: a.id,
+      name: a.name,
+      broker: a.broker,
+      accountType: a.accountType,
+      currency: a.currency,
+      balance: a.balance,
+      netPnL,
+      equity: a.balance + netPnL,
+      closedTrades: closed.length,
+      openTrades: a.trades.filter((t) => t.status === 'OPEN').length,
+      winRate: closed.length ? (wins / closed.length) * 100 : 0,
+    };
+  });
+
+  const totalClosed = rows.reduce((s, r) => s + r.closedTrades, 0);
+  const totalWins = rows.reduce(
+    (s, r) => s + Math.round((r.winRate / 100) * r.closedTrades),
+    0,
+  );
+
+  return {
+    accounts: rows,
+    totals: {
+      accounts: rows.length,
+      balance: rows.reduce((s, r) => s + r.balance, 0),
+      netPnL: rows.reduce((s, r) => s + r.netPnL, 0),
+      equity: rows.reduce((s, r) => s + r.equity, 0),
+      closedTrades: totalClosed,
+      openTrades: rows.reduce((s, r) => s + r.openTrades, 0),
+      winRate: totalClosed ? (totalWins / totalClosed) * 100 : 0,
+    },
+  };
+}
+
 export interface CreateAccountInput {
   name: string;
   broker?: string;

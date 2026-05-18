@@ -46,6 +46,7 @@ model User {
   savedStrategies   SavedStrategy[]
   passwordResetTokens PasswordResetToken[]
   testimonials      Testimonial[]
+  aiInsights        AiInsight[]
 
   @@map("users")
 }
@@ -711,4 +712,33 @@ model Candle {
   // managed by the migration `20260508000000_candles_covering_index...`
   // because Prisma 5.22 does not yet generate INCLUDE clauses.
   @@map("candles")
+}
+
+// ── AI trade coach ────────────────────────────────────────────────────────────
+// Persisted output of an AI analysis run so the Pattern page survives reloads
+// and the weekly email reuses the latest scan without re-billing the LLM.
+
+enum AiInsightKind {
+  PATTERN_SCAN
+  WEEKLY_REVIEW
+}
+
+model AiInsight {
+  id     String        @id @default(cuid())
+  userId String
+  user   User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+  kind   AiInsightKind
+
+  // Provider that produced this run: "anthropic" | "groq" | "rule-based".
+  model    String
+  // Full structured result: { summary, stats, patterns[], ... }. Read back
+  // verbatim by the client and the weekly email renderer.
+  payload  Json
+  // Number of closed trades the analysis was computed over.
+  tradeCount Int @default(0)
+
+  createdAt DateTime @default(now())
+
+  @@index([userId, kind, createdAt])
+  @@map("ai_insights")
 }

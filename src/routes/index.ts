@@ -12,6 +12,7 @@ import syncRoutes from './syncRoutes';
 import connectRoutes from './connectRoutes';
 import instrumentRoutes from './instrumentRoutes';
 import publicRoutes from './publicRoutes';
+import aiRoutes from './aiRoutes';
 
 const router = Router();
 
@@ -33,5 +34,6 @@ router.use('/routines', routineRoutes);
 router.use('/backtesting', backtestRoutes);
 router.use('/instruments', instrumentRoutes);
 router.use('/public', publicRoutes);
+router.use('/ai', aiRoutes);
 
 export default router;

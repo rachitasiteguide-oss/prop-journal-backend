@@ -1,7 +1,7 @@
 import { Request, Response, NextFunction } from 'express';
 import { z } from 'zod';
 import { AccountType } from '@prisma/client';
-import { getAccounts, createAccount } from '../services/accountService';
+import { getAccounts, createAccount, getAccountsOverview } from '../services/accountService';
 
 const createAccountSchema = z.object({
   name: z.string().min(1).max(100),
@@ -19,6 +19,19 @@ export async function getAccountsHandler(
   try {
     const accounts = await getAccounts(req.currentUser!.userId);
     res.json({ status: 'success', data: accounts });
+  } catch (error) {
+    next(error);
+  }
+}
+
+export async function getAccountsOverviewHandler(
+  req: Request,
+  res: Response,
+  next: NextFunction,
+): Promise<void> {
+  try {
+    const data = await getAccountsOverview(req.currentUser!.userId);
+    res.json({ status: 'success', data });
   } catch (error) {
     next(error);
   }
