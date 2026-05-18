@@ -261,3 +261,44 @@ describe('SizingConfig: integration with prop-firm rules', () => {
     expect(closedTrades[0].pnl).toBeCloseTo(-100, 1);
   });
 });
+
+// ── Regression: Bug 1 — MAE/MFE must scale with the trade's ACTUAL volume ────
+// Before the fix, maxAdverse/maxFavorable were multiplied by a hoisted
+// constant derived from config.volume (the FIXED fallback), so under
+// RISK_BASED/PCT_EQUITY sizing the recorded excursion was off by
+// (actualVolume / config.volume). Live FOREX run showed maxAdverse=2383 on a
+// trade that lost $106. This locks the correct per-trade scaling.
+describe('Regression: MAE/MFE scale with per-trade volume (Bug 1)', () => {
+  it('RISK_BASED: maxAdverse/maxFavorable use the position volume, not config.volume', () => {
+    // STOCKS, mult 1. $10k acct, 1% risk, 2% SL → volume = 100/(100*0.02) = 50.
+    // config.volume is left at 1 — the OLD code would have scaled MAE by 1.
+    const c: PureCandle[] = [
+      { openTime: new Date(Date.UTC(2024, 0, 1)), open: 100, high: 100, low: 100,   close: 100, volume: 1000 }, // signal
+      { openTime: new Date(Date.UTC(2024, 0, 2)), open: 100, high: 100, low: 100,   close: 100, volume: 1000 }, // entry @100
+      { openTime: new Date(Date.UTC(2024, 0, 3)), open: 100, high: 100, low: 98.5,  close: 99,  volume: 1000 }, // dip (no SL: SL=98)
+      { openTime: new Date(Date.UTC(2024, 0, 4)), open: 99,  high: 101, low: 99,    close: 100, volume: 1000 }, // peak 101
+      { openTime: new Date(Date.UTC(2024, 0, 5)), open: 100, high: 101, low: 100,   close: 101, volume: 1000 },
+      { openTime: new Date(Date.UTC(2024, 0, 6)), open: 101, high: 101, low: 101,   close: 101, volume: 1000 }, // force-close @101
+    ];
+    const signals: Signal[] = ['BUY', null, null, null, null, null];
+
+    const cfg: PureEngineConfig = {
+      ...baseConfig,
+      volume:          1,            // FIXED fallback — must NOT be used for MAE scaling
+      stopLossPct:     0.02,         // SL=98, low 98.5 never triggers it
+      takeProfitRatio: 5,            // TP=110, never triggers
+      sizing: { mode: 'RISK_BASED', riskPerTrade: 0.01, stopSource: 'PCT' },
+    };
+
+    const { closedTrades } = runEventLoopPure(c, signals, cfg, 'TEST');
+    expect(closedTrades.length).toBe(1);
+    const t = closedTrades[0];
+    expect(t.volume).toBeCloseTo(50, 4);
+    // Adverse price excursion = entry(100) − peakLow(98.5) = 1.5 → ×1×50 = 75.
+    expect(t.maxAdverse).toBeCloseTo(75, 4);
+    // Favourable = peakHigh(101) − entry(100) = 1.0 → ×1×50 = 50.
+    expect(t.maxFavorable).toBeCloseTo(50, 4);
+    // Sanity: MAE is ~50× the price distance, proving volume (not config.volume=1) was applied.
+    expect(t.maxAdverse).toBeGreaterThan(10);
+  });
+});

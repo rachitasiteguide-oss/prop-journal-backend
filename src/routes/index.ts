@@ -10,6 +10,8 @@ import routineRoutes from './routineRoutes';
 import backtestRoutes from './backtestRoutes';
 import syncRoutes from './syncRoutes';
 import connectRoutes from './connectRoutes';
+import instrumentRoutes from './instrumentRoutes';
+import publicRoutes from './publicRoutes';
 
 const router = Router();
 
@@ -29,5 +31,7 @@ router.use('/strategies', strategyRoutes);
 router.use('/leaderboard', leaderboardRoutes);
 router.use('/routines', routineRoutes);
 router.use('/backtesting', backtestRoutes);
+router.use('/instruments', instrumentRoutes);
+router.use('/public', publicRoutes);
 
 export default router;

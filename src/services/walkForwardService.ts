@@ -16,7 +16,7 @@ import { AppError } from '../middlewares/errorHandler';
 import { logger } from '../utils/logger';
 import { getCandles } from './candleService';
 import { runEngineInline, type EngineConfig } from './backtestEngine';
-import { type PureCandle } from './backtestEngineCore';
+import { generateSignalsPure, type PureCandle, type Signal } from './backtestEngineCore';
 import { summariseIteration, type SweepIterationMetrics, type SweepAxis } from './sweepService';
 
 // ── Public types ─────────────────────────────────────────────────────────────
@@ -192,6 +192,29 @@ async function runWalkForward(wfId: string): Promise<void> {
     return;
   }
 
+  // Pre-compute signals for every axis value ONCE on the FULL candle series.
+  // Slicing candles per window and regenerating signals on the short slice
+  // restarts indicator warmup inside each window — for a slow strategy
+  // (e.g. SMA-30) that ate the entire ~35-bar OOS slice and every OOS
+  // window came back with 0 trades (false "no edge" verdict). Generating
+  // on the full history first, then slicing the aligned signal array,
+  // preserves warmup so OOS windows actually trade. Indicators only look
+  // backward, so a signal at bar i never uses future data — slicing the
+  // signal array introduces no look-ahead.
+  const signalsByParam = new Map<number, Signal[]>();
+  for (const value of axis.values) {
+    try {
+      const cfg = buildEngineConfig(base, parent.startingBalance, parent.instrumentType, axis.paramKey, value);
+      signalsByParam.set(
+        value,
+        generateSignalsPure(candles, cfg.strategyType, cfg.strategyConfig, cfg.customStrategy),
+      );
+    } catch (err) {
+      logger.warn(`WF ${wfId}: signal precompute failed for ${axis.paramKey}=${value}: ${err instanceof Error ? err.message : String(err)}`);
+      signalsByParam.set(value, new Array(candles.length).fill(null));
+    }
+  }
+
   const totalIterations = wConfig.windows * (axis.values.length + 1); // +1 = OOS validation per window
   let doneIterations = 0;
   const windowResults: WindowResult[] = [];
@@ -204,13 +227,16 @@ async function runWalkForward(wfId: string): Promise<void> {
     const isSlice   = candles.slice(winStart, isEnd);
     const oosSlice  = candles.slice(isEnd, winEnd);
 
-    // Phase A: run every paramValue on the IS slice.
+    // Phase A: run every paramValue on the IS slice. Signals are sliced from
+    // the full-series precompute (warmup preserved), NOT regenerated on the
+    // short slice.
     const isResults: SweepIterationMetrics[] = [];
     for (const value of axis.values) {
       try {
         const cfg = buildEngineConfig(base, parent.startingBalance, parent.instrumentType, axis.paramKey, value);
+        const isSignals = (signalsByParam.get(value) ?? []).slice(winStart, isEnd);
         const { closedTrades, finalBalance, diagnostics } = runEngineInline(
-          isSlice, null, cfg, parent.symbol, () => { /* no-op */ },
+          isSlice, isSignals, cfg, parent.symbol, () => { /* no-op */ },
         );
         isResults.push(summariseIteration(value, closedTrades, parent.startingBalance, finalBalance, diagnostics));
       } catch (err) {
@@ -232,8 +258,9 @@ async function runWalkForward(wfId: string): Promise<void> {
     let oosMetrics: SweepIterationMetrics;
     try {
       const cfg = buildEngineConfig(base, parent.startingBalance, parent.instrumentType, axis.paramKey, isBestParam);
+      const oosSignals = (signalsByParam.get(isBestParam) ?? []).slice(isEnd, winEnd);
       const { closedTrades, finalBalance, diagnostics } = runEngineInline(
-        oosSlice, null, cfg, parent.symbol, () => { /* no-op */ },
+        oosSlice, oosSignals, cfg, parent.symbol, () => { /* no-op */ },
       );
       oosMetrics = summariseIteration(isBestParam, closedTrades, parent.startingBalance, finalBalance, diagnostics);
     } catch (err) {

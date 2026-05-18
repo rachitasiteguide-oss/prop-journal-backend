@@ -360,8 +360,22 @@ export async function getSessionAnalytics(userId: string, sessionId: string) {
   // require a trade frequency assumption (trades/year) that varies by run; we
   // report the raw ratio so it remains directly comparable across backtests
   // run on the same strategy/timeframe.
-  const sharpe  = stdReturn  > 0 ? meanReturn / stdReturn  : 0;
-  const sortino = downsideStd > 0 ? meanReturn / downsideStd : 0;
+  // Guard against tiny-sample blow-ups: with a handful of trades the
+  // downside (or total) deviation can be a near-zero number, sending the
+  // ratio to absurd values (observed 943 Sortino on 4 trades). Require a
+  // minimum sample, an epsilon floor on the denominator, and clamp the
+  // result to a sane band — a per-trade Sharpe/Sortino realistically never
+  // exceeds single digits; anything past that is noise, not skill.
+  const RATIO_EPS = 1e-9;
+  const RATIO_CAP = 20;
+  const clampRatio = (x: number) =>
+    !Number.isFinite(x) ? 0 : Math.max(-RATIO_CAP, Math.min(RATIO_CAP, x));
+  const sharpe = (tradeReturns.length >= 2 && stdReturn > RATIO_EPS)
+    ? clampRatio(meanReturn / stdReturn)
+    : 0;
+  const sortino = (downside.length >= 2 && downsideStd > RATIO_EPS)
+    ? clampRatio(meanReturn / downsideStd)
+    : 0;
 
   // CAGR over the actual run window. Uses the persisted run dates, not the
   // configured session range — they're identical for AUTO sessions.
@@ -378,16 +392,21 @@ export async function getSessionAnalytics(userId: string, sessionId: string) {
   // up — multiply by expected number of trades/period to estimate gross.
   const expectancy = totalTrades > 0 ? totalPnl / totalTrades : 0;
 
-  // R-multiple: pnl / initial-risk. Initial risk = |entry − stopLoss| × volume,
-  // in P&L currency. Only valid for trades with a stopLoss; trades without
-  // one are excluded from the average.
+  // R-multiple: net P&L ÷ initial dollar risk. The dollar risk must be
+  // computed at the SAME scale as pnl. pnl = priceDiff × volume × instrument
+  // multiplier − commission, so initial risk = |entry − stopLoss| × volume ×
+  // instrument multiplier. The earlier formula omitted the multiplier, which
+  // made FOREX (multiplier 100,000) report ~100,000× inflated R (observed
+  // avgRMultiple ≈ 43,443). Mirror the engine's calcRawPnl multiplier map.
+  const instrumentMultiplier = session.instrumentType === 'FOREX' ? 100_000 : 1;
   const rMultiples = trades
     .map((t) => {
       if (t.stopLoss == null) return null;
       const riskPrice = Math.abs(t.entryPrice - t.stopLoss);
-      if (riskPrice === 0) return null;
-      const pnlPerUnit = (t.pnl ?? 0) / riskPrice / t.volume;
-      return pnlPerUnit;
+      if (riskPrice === 0 || t.volume <= 0) return null;
+      const dollarRisk = riskPrice * t.volume * instrumentMultiplier;
+      if (dollarRisk <= 0) return null;
+      return (t.pnl ?? 0) / dollarRisk;
     })
     .filter((x): x is number => x !== null);
   const avgRMultiple = mean(rMultiples);

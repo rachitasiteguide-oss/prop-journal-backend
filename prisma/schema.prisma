@@ -45,8 +45,29 @@ model User {
   backtestWalkForwards BacktestWalkForward[]
   savedStrategies   SavedStrategy[]
   passwordResetTokens PasswordResetToken[]
+  testimonials      Testimonial[]
 
   @@map("users")
+}
+
+// Real, user-submitted testimonials. Replaces the invented landing-page
+// quotes. Nothing is shown publicly until an admin flips `approved` true,
+// so fabricated/unvetted content can never reach the marketing site.
+model Testimonial {
+  id         String   @id @default(cuid())
+  userId     String
+  user       User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  authorName String   // snapshot of the submitter's display name at submit time
+  role       String?  // optional self-described role e.g. "Funded $100K (FTMO)"
+  quote      String
+  rating     Int      @default(5) // 1-5
+  approved   Boolean  @default(false)
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  @@index([approved])
+  @@index([userId])
+  @@map("testimonials")
 }
 
 // ── Password Reset ────────────────────────────────────────────────────────────

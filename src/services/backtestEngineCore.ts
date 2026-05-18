@@ -586,22 +586,13 @@ export function runEventLoopPure(
     );
   }
 
-  // Helper: P&L unit per 1 unit of price movement at the DEFAULT (config)
-  // volume. Used to convert price-distance excursions into currency for
-  // MAE/MFE. Note that per-trade volume may differ when RISK_BASED or
-  // PCT_EQUITY sizing is active — but MAE/MFE is reported in currency at
-  // the trade's actual volume below.
-  const pnlPerPriceUnit = calcRawPnl(
-    'BUY',
-    0,
-    1,
-    defaultVolume,
-    instrumentType,
-  );
-
   // Per-1-unit-of-volume P&L at a 1-unit price move. Lets us convert dollar
-  // risk to volume regardless of instrument multiplier. For FOREX with mult
-  // 100,000 this is 100,000; for STOCKS it is 1.
+  // risk to volume regardless of instrument multiplier (FOREX = 100,000,
+  // STOCKS = 1), AND convert a position's price-distance excursion into
+  // currency at THAT position's actual volume — critical now that
+  // RISK_BASED / PCT_EQUITY sizing means volume varies per trade. MAE/MFE
+  // is therefore `priceDistance * pnlPerUnitVolume * pos.volume`, never a
+  // hoisted default-volume constant.
   const pnlPerUnitVolume = calcRawPnl('BUY', 0, 1, 1, instrumentType);
 
   // Compute the entry volume for a new position. Falls back to defaultVolume
@@ -725,8 +716,8 @@ export function runEventLoopPure(
         slippage:    pos.entrySlippage,
         ambiguous:   false,
         forceClosed: true,
-        maxAdverse:    maxAdversePrice   * pnlPerPriceUnit,
-        maxFavorable:  maxFavorablePrice * pnlPerPriceUnit,
+        maxAdverse:    maxAdversePrice   * pnlPerUnitVolume * pos.volume,
+        maxFavorable:  maxFavorablePrice * pnlPerUnitVolume * pos.volume,
         entryAt:     pos.entryAt,
         exitAt:      atTime,
       });
@@ -840,8 +831,8 @@ export function runEventLoopPure(
           slippage:   pos.entrySlippage + exitSlippagePrice,
           ambiguous:  exit.ambiguous,
           forceClosed: false,
-          maxAdverse:   maxAdversePrice   * pnlPerPriceUnit,
-          maxFavorable: maxFavorablePrice * pnlPerPriceUnit,
+          maxAdverse:   maxAdversePrice   * pnlPerUnitVolume * pos.volume,
+          maxFavorable: maxFavorablePrice * pnlPerUnitVolume * pos.volume,
           entryAt:    pos.entryAt,
           exitAt:     openTimes[i],
         });
@@ -1005,8 +996,8 @@ export function runEventLoopPure(
       slippage:   pos.entrySlippage,
       ambiguous:  false,
       forceClosed: true,
-      maxAdverse:   maxAdversePrice   * pnlPerPriceUnit,
-      maxFavorable: maxFavorablePrice * pnlPerPriceUnit,
+      maxAdverse:   maxAdversePrice   * pnlPerUnitVolume * pos.volume,
+      maxFavorable: maxFavorablePrice * pnlPerUnitVolume * pos.volume,
       entryAt:    pos.entryAt,
       exitAt:     lastOpenTime,
     });
