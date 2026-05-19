@@ -6,6 +6,7 @@
 import { describe, it, expect } from 'vitest';
 import {
   pickBest,
+  assessSelection,
   computeAggregate,
   type WindowResult,
 } from '../walkForwardService';
@@ -71,6 +72,49 @@ describe('pickBest', () => {
       row({ paramValue: 10, tradeCount: 0 }),
     ];
     expect(pickBest(r, 'sharpe')).toBe(5);
+  });
+});
+
+describe('assessSelection (SR9 — flags arbitrary IS-best fallbacks)', () => {
+  it('flags windows where no parameter produced any IS trades', () => {
+    const r = [row({ paramValue: 15, tradeCount: 0 }), row({ paramValue: 23, tradeCount: 0 })];
+    const a = assessSelection(r, 'sharpe', pickBest(r, 'sharpe'));
+    expect(a.reliable).toBe(false);
+    expect(a.eligibleCount).toBe(0);
+    expect(a.reason).toMatch(/no parameter produced any in-sample trades/i);
+  });
+
+  it('flags an all-tie sweep (every traded param has Sharpe 0) as not metric-driven', () => {
+    const r = [
+      row({ paramValue: 15, tradeCount: 3, sharpe: 0 }),
+      row({ paramValue: 23, tradeCount: 4, sharpe: 0 }),
+    ];
+    const a = assessSelection(r, 'sharpe', pickBest(r, 'sharpe'));
+    expect(a.reliable).toBe(false);
+    expect(a.reason).toMatch(/tie on sharpe/i);
+  });
+
+  it('flags a winner chosen on too few (<5) in-sample trades', () => {
+    const r = [
+      row({ paramValue: 15, tradeCount: 1, sharpe: 0.9 }),
+      row({ paramValue: 23, tradeCount: 8, sharpe: 0.1 }),
+    ];
+    // Sharpe picks param 15 (1 trade) — meaningful metric spread but tiny sample.
+    const a = assessSelection(r, 'sharpe', pickBest(r, 'sharpe'));
+    expect(a.reliable).toBe(false);
+    expect(a.bestTradeCount).toBe(1);
+    expect(a.reason).toMatch(/only 1 in-sample trade .*<5/i);
+  });
+
+  it('marks a genuine metric-driven optimum on a sufficient sample as reliable', () => {
+    const r = [
+      row({ paramValue: 15, tradeCount: 12, sharpe: 0.2 }),
+      row({ paramValue: 23, tradeCount: 9,  sharpe: 0.8 }),
+    ];
+    const a = assessSelection(r, 'sharpe', pickBest(r, 'sharpe'));
+    expect(a.reliable).toBe(true);
+    expect(a.reason).toBeNull();
+    expect(a.bestTradeCount).toBe(9);
   });
 });
 

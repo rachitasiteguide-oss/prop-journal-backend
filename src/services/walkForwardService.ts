@@ -37,6 +37,12 @@ export interface WindowResult {
   oosEndDate:      string;
   isResults:       SweepIterationMetrics[];   // every paramValue evaluated on IS
   isBestParam:     number;
+  // Whether isBestParam was a genuine metric-driven optimum. False when the
+  // selection was an arbitrary fallback (no IS trades / all params tie / too
+  // few trades) — the OOS leg still runs, but the result is not meaningful.
+  // Optional for backward-compat with results persisted before this field.
+  isBestReliable?: boolean;
+  selectionWarning?: string | null;
   // Same metric block as a sweep iteration, computed on the OOS slice with
   // the IS-best param.
   oosMetrics:      SweepIterationMetrics;
@@ -253,6 +259,7 @@ async function runWalkForward(wfId: string): Promise<void> {
     // Phase B: pick IS-best by selected metric. Skip iterations with zero
     // trades — they can't be "best."
     const isBestParam = pickBest(isResults, wConfig.selectionMetric);
+    const selection   = assessSelection(isResults, wConfig.selectionMetric, isBestParam);
 
     // Phase C: re-run IS-best on the OOS slice.
     let oosMetrics: SweepIterationMetrics;
@@ -276,6 +283,8 @@ async function runWalkForward(wfId: string): Promise<void> {
       oosEndDate:   oosSlice[oosSlice.length - 1]?.openTime.toISOString() ?? '',
       isResults,
       isBestParam,
+      isBestReliable:   selection.reliable,
+      selectionWarning: selection.reason,
       oosMetrics,
     });
 
@@ -320,6 +329,62 @@ export function pickBest(
     if (r[metric] > best[metric]) best = r;
   }
   return best.paramValue;
+}
+
+// Minimum in-sample trades for an IS-best selection to be statistically
+// meaningful. Matches sweepService's "Sample size <5 trades" convention.
+export const MIN_RELIABLE_IS_TRADES = 5;
+
+export interface SelectionAssessment {
+  reliable:       boolean;
+  reason:         string | null;
+  eligibleCount:  number; // params that produced >0 IS trades
+  bestTradeCount: number; // IS trade count of the chosen param
+}
+
+// Classifies whether pickBest's choice was a real metric-driven optimum or a
+// degenerate fallback. pickBest itself MUST keep returning a number (the OOS
+// leg still needs a param to run), so this is a separate analysis layer that
+// the orchestrator records on each WindowResult instead of silently
+// presenting an arbitrary param as if the metric had chosen it (SR9).
+export function assessSelection(
+  results:   SweepIterationMetrics[],
+  metric:    SelectionMetric,
+  bestParam: number,
+  minTrades: number = MIN_RELIABLE_IS_TRADES,
+): SelectionAssessment {
+  const eligible       = results.filter(r => r.tradeCount > 0);
+  const bestTradeCount = results.find(r => r.paramValue === bestParam)?.tradeCount ?? 0;
+
+  if (eligible.length === 0) {
+    return {
+      reliable: false,
+      reason: `No parameter produced any in-sample trades — IS-best (${bestParam}) is an arbitrary fallback, not a ${metric}-driven choice. The OOS result is not meaningful; widen the date range or loosen the strategy.`,
+      eligibleCount: 0,
+      bestTradeCount,
+    };
+  }
+
+  const metricVals = eligible.map(r => r[metric]);
+  if (Math.max(...metricVals) - Math.min(...metricVals) === 0) {
+    return {
+      reliable: false,
+      reason: `All ${eligible.length} in-sample parameters tie on ${metric} (=${metricVals[0]}). IS-best (${bestParam}) is just the first by order, not a real optimum — changing the selection metric will not change the result.`,
+      eligibleCount: eligible.length,
+      bestTradeCount,
+    };
+  }
+
+  if (bestTradeCount < minTrades) {
+    return {
+      reliable: false,
+      reason: `IS-best (${bestParam}) was chosen on only ${bestTradeCount} in-sample trade${bestTradeCount === 1 ? '' : 's'} (<${minTrades}) — too few for ${metric} to be statistically meaningful.`,
+      eligibleCount: eligible.length,
+      bestTradeCount,
+    };
+  }
+
+  return { reliable: true, reason: null, eligibleCount: eligible.length, bestTradeCount };
 }
 
 export function computeAggregate(windows: WindowResult[]): WalkForwardAggregate {

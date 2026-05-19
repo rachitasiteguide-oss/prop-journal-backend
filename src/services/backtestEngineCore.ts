@@ -184,7 +184,7 @@ export type ProgressCb = (progress: number) => void;
 
 // ── P&L formula — instrument-aware ────────────────────────────────────────────
 
-function calcRawPnl(
+export function calcRawPnl(
   side: 'BUY' | 'SELL',
   entryPrice: number,
   exitPrice: number,

@@ -3,6 +3,7 @@ import { AppError } from '../middlewares/errorHandler';
 import { logger } from '../utils/logger';
 import { BacktestStatus, TradeSide, TradeStatus, Prisma } from '@prisma/client';
 import { runAutomatedBacktest, type EngineConfig } from './backtestEngine';
+import { calcRawPnl } from './backtestEngineCore';
 import { type StrategyType } from './strategyDefinitions';
 import { getCachedCandles } from './candleService';
 
@@ -95,9 +96,10 @@ export async function addTrade(userId: string, sessionId: string, data: {
   let status: TradeStatus = 'OPEN';
 
   if (data.exitPrice != null && data.exitPrice > 0) {
-    const direction = data.side === 'BUY' ? 1 : -1;
-    const priceDiff = (data.exitPrice - data.entryPrice) * direction;
-    pnl = parseFloat((priceDiff * (data.volume ?? 1) * 100000 * 10 / 100000).toFixed(2));
+    const rawPnl = calcRawPnl(
+      data.side, data.entryPrice, data.exitPrice, data.volume ?? 1, session.instrumentType,
+    );
+    pnl = parseFloat(rawPnl.toFixed(2));
     pnlPct = parseFloat(((pnl / session.startingBalance) * 100).toFixed(4));
     status = 'CLOSED';
   }
@@ -146,9 +148,11 @@ export async function updateTrade(userId: string, sessionId: string, tradeId: st
   let status = data.status ?? trade.status;
 
   if (data.exitPrice != null && trade.exitPrice == null) {
-    const direction = trade.side === 'BUY' ? 1 : -1;
-    const priceDiff = (data.exitPrice - trade.entryPrice) * direction;
-    const newPnl = parseFloat((priceDiff * trade.volume * 100000 * 10 / 100000).toFixed(2));
+    const newPnl = parseFloat(
+      calcRawPnl(
+        trade.side, trade.entryPrice, data.exitPrice, trade.volume, session.instrumentType,
+      ).toFixed(2),
+    );
     const newPnlPct = parseFloat(((newPnl / session.startingBalance) * 100).toFixed(4));
     pnl = newPnl;
     pnlPct = newPnlPct;
@@ -183,9 +187,11 @@ export async function bulkAddTrades(userId: string, sessionId: string, trades: A
     let status: TradeStatus = 'OPEN';
 
     if (data.exitPrice != null && data.exitPrice > 0) {
-      const direction = data.side === 'BUY' ? 1 : -1;
-      const priceDiff = (data.exitPrice - data.entryPrice) * direction;
-      pnl = parseFloat((priceDiff * (data.volume ?? 1) * 100000 * 10 / 100000).toFixed(2));
+      pnl = parseFloat(
+        calcRawPnl(
+          data.side, data.entryPrice, data.exitPrice, data.volume ?? 1, session.instrumentType,
+        ).toFixed(2),
+      );
       pnlPct = parseFloat(((pnl / session.startingBalance) * 100).toFixed(4));
       status = 'CLOSED';
       balanceDelta += pnl;
