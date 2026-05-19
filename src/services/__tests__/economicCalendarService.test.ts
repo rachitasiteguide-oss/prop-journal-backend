@@ -2,6 +2,8 @@ import { describe, it, expect } from 'vitest';
 import {
   parseJBlankedDate,
   normalizeEvent,
+  normalizeForexFactoryEvent,
+  parseFFNumber,
   symbolCurrencies,
   detectNewsWindowTrades,
   type CalendarEvent,
@@ -68,6 +70,66 @@ describe('normalizeEvent', () => {
     expect(normalizeEvent({ Currency: 'USD', Date: '2024.02.08 00:00:00' })).toBeNull();
     expect(normalizeEvent({ Name: 'X', Date: '2024.02.08 00:00:00' })).toBeNull();
     expect(normalizeEvent({ Name: 'X', Currency: 'USD', Date: 'bad' })).toBeNull();
+  });
+});
+
+describe('parseFFNumber', () => {
+  it('strips percent and parses', () => {
+    expect(parseFFNumber('0.8%')).toBe(0.8);
+    expect(parseFFNumber('-0.21%')).toBeCloseTo(-0.21);
+    expect(parseFFNumber('46.0')).toBe(46);
+  });
+  it('applies K/M/B/T multipliers', () => {
+    expect(parseFFNumber('1.2K')).toBe(1200);
+    expect(parseFFNumber('3M')).toBe(3_000_000);
+  });
+  it('returns null for empty / non-numeric', () => {
+    expect(parseFFNumber('')).toBeNull();
+    expect(parseFFNumber('  ')).toBeNull();
+    expect(parseFFNumber('n/a')).toBeNull();
+    expect(parseFFNumber(undefined)).toBeNull();
+  });
+});
+
+describe('normalizeForexFactoryEvent', () => {
+  it('normalizes a ForexFactory weekly row (ISO date with offset)', () => {
+    const ev = normalizeForexFactoryEvent({
+      title: ' Core CPI m/m ',
+      country: 'usd',
+      date: '2026-05-17T18:30:00-04:00',
+      impact: 'High',
+      forecast: '0.4%',
+      previous: '0.2%',
+    });
+    expect(ev).toEqual<CalendarEvent>({
+      name: 'Core CPI m/m',
+      currency: 'USD',
+      impact: 'High',
+      time: '2026-05-17T22:30:00.000Z', // -04:00 -> UTC
+      forecast: 0.4,
+      previous: 0.2,
+      actual: null,
+    });
+  });
+
+  it('maps non-standard impacts (Holiday) to None', () => {
+    const ev = normalizeForexFactoryEvent({
+      title: 'Bank Holiday',
+      country: 'EUR',
+      date: '2026-05-18T00:00:00-04:00',
+      impact: 'Holiday',
+      forecast: '',
+      previous: '',
+    });
+    expect(ev?.impact).toBe('None');
+    expect(ev?.forecast).toBeNull();
+  });
+
+  it('drops rows missing title, country, or a valid date', () => {
+    expect(
+      normalizeForexFactoryEvent({ country: 'USD', date: '2026-05-18T00:00:00-04:00' }),
+    ).toBeNull();
+    expect(normalizeForexFactoryEvent({ title: 'X', country: 'USD', date: 'bad' })).toBeNull();
   });
 });
 

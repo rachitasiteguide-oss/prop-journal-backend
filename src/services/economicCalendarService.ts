@@ -179,59 +179,160 @@ export function detectNewsWindowTrades(
   return hits;
 }
 
+// ── ForexFactory fallback (keyless) ──────────────────────────────────────────
+//
+// JBlanked's "free" calendar has moved behind paid credits. When JBlanked is
+// unavailable (no key, 401/credits, error, empty) we fall back to
+// ForexFactory's own weekly JSON, which needs no key. Same week-of data.
+
+/** Raw shape of the faireconomy ForexFactory weekly feed. */
+interface FFRawEvent {
+  title?: unknown;
+  country?: unknown; // ISO currency code, e.g. "USD"
+  date?: unknown; // ISO-8601 with offset, e.g. "2026-05-17T18:30:00-04:00"
+  impact?: unknown; // "High" | "Medium" | "Low" | "Holiday" | ...
+  forecast?: unknown; // string like "0.8%", "46.0", "1.2K", or ""
+  previous?: unknown;
+}
+
+const FF_MULTIPLIER: Record<string, number> = {
+  K: 1e3,
+  M: 1e6,
+  B: 1e9,
+  T: 1e12,
+};
+
+/** Parse ForexFactory's stringy numbers ("0.8%", "-0.21%", "1.2K", ""). */
+export function parseFFNumber(v: unknown): number | null {
+  if (typeof v === 'number') return Number.isFinite(v) ? v : null;
+  if (typeof v !== 'string') return null;
+  const s = v.trim().replace(/[,%\s]/g, '');
+  if (!s) return null;
+  const m = s.match(/^(-?\d*\.?\d+)([KMBT])?$/i);
+  if (!m) return null;
+  const n = parseFloat(m[1]);
+  if (!Number.isFinite(n)) return null;
+  return m[2] ? n * FF_MULTIPLIER[m[2].toUpperCase()] : n;
+}
+
+/** Normalize one ForexFactory row. Returns null when unusable. */
+export function normalizeForexFactoryEvent(
+  raw: FFRawEvent,
+): CalendarEvent | null {
+  const name = typeof raw.title === 'string' ? raw.title.trim() : '';
+  const currency =
+    typeof raw.country === 'string' ? raw.country.trim().toUpperCase() : '';
+  const dateStr = typeof raw.date === 'string' ? raw.date.trim() : '';
+  const date = dateStr ? new Date(dateStr) : null;
+  if (!name || !currency || !date || Number.isNaN(date.getTime())) return null;
+
+  const impactRaw = typeof raw.impact === 'string' ? raw.impact.trim() : '';
+  const impact = (VALID_IMPACTS.has(impactRaw) ? impactRaw : 'None') as ImpactLevel;
+
+  return {
+    name,
+    currency,
+    impact,
+    time: date.toISOString(),
+    forecast: parseFFNumber(raw.forecast),
+    previous: parseFFNumber(raw.previous),
+    actual: null, // the weekly FF feed carries no actuals
+  };
+}
+
 // ── Cached network fetch ─────────────────────────────────────────────────────
 
 const CALENDAR_URL =
   'https://www.jblanked.com/news/api/forex-factory/calendar/week/';
+const FF_FALLBACK_URL =
+  'https://nfs.faireconomy.media/ff_calendar_thisweek.json';
 const CACHE_TTL_MS = 30 * 60_000; // 30 min — the upstream feed is hourly at best
 const FETCH_TIMEOUT_MS = 10_000;
 
 let cache: { at: number; events: CalendarEvent[] } | null = null;
 
-async function fetchWithTimeout(url: string): Promise<Response> {
+async function fetchWithTimeout(
+  url: string,
+  headers: Record<string, string> = {},
+): Promise<Response> {
   const ctrl = new AbortController();
   const timer = setTimeout(() => ctrl.abort(), FETCH_TIMEOUT_MS);
   try {
-    return await fetch(url, {
-      headers: { Authorization: `Api-Key ${env.JBLANKED_API_KEY}` },
-      signal: ctrl.signal,
-    });
+    return await fetch(url, { headers, signal: ctrl.signal });
   } finally {
     clearTimeout(timer);
   }
 }
 
 /**
- * This week's events, normalized and cached. Returns [] (never throws) when
- * the API key is missing or the upstream call fails, so the dashboard simply
- * shows an empty calendar instead of erroring.
+ * Primary source: JBlanked. Returns null (not []) to signal "unavailable, try
+ * the fallback" — distinct from a successful empty week. Unchanged behaviour
+ * from the original implementation, just lifted into its own function.
  */
-export async function getWeeklyEvents(
-  force = false,
-): Promise<CalendarEvent[]> {
-  if (!env.JBLANKED_API_KEY) return [];
-  const now = Date.now();
-  if (!force && cache && now - cache.at < CACHE_TTL_MS) {
-    return cache.events;
-  }
+async function fetchJBlanked(): Promise<CalendarEvent[] | null> {
+  if (!env.JBLANKED_API_KEY) return null;
   try {
-    const res = await fetchWithTimeout(CALENDAR_URL);
+    const res = await fetchWithTimeout(CALENDAR_URL, {
+      Authorization: `Api-Key ${env.JBLANKED_API_KEY}`,
+    });
     if (!res.ok) {
-      logger.warn(`Economic calendar fetch failed: ${res.status}`);
-      return cache?.events ?? [];
+      logger.warn(`Economic calendar (JBlanked) failed: ${res.status}`);
+      return null;
     }
     const body = (await res.json()) as unknown;
     const rows = Array.isArray(body) ? body : [];
     const events = rows
       .map((r) => normalizeEvent(r as RawEvent))
-      .filter((e): e is CalendarEvent => e !== null)
-      .sort((a, b) => a.time.localeCompare(b.time));
-    cache = { at: now, events };
-    return events;
+      .filter((e): e is CalendarEvent => e !== null);
+    return events.length > 0 ? events : null;
   } catch (err) {
-    logger.warn(`Economic calendar errored: ${(err as Error).message}`);
-    return cache?.events ?? [];
+    logger.warn(`Economic calendar (JBlanked) errored: ${(err as Error).message}`);
+    return null;
   }
+}
+
+/** Fallback source: keyless ForexFactory weekly JSON. */
+async function fetchForexFactory(): Promise<CalendarEvent[] | null> {
+  try {
+    const res = await fetchWithTimeout(FF_FALLBACK_URL, {
+      'user-agent': 'Mozilla/5.0 (PropJournalX economic-calendar)',
+    });
+    if (!res.ok) {
+      logger.warn(`Economic calendar (ForexFactory) failed: ${res.status}`);
+      return null;
+    }
+    const body = (await res.json()) as unknown;
+    const rows = Array.isArray(body) ? body : [];
+    const events = rows
+      .map((r) => normalizeForexFactoryEvent(r as FFRawEvent))
+      .filter((e): e is CalendarEvent => e !== null);
+    return events.length > 0 ? events : null;
+  } catch (err) {
+    logger.warn(`Economic calendar (ForexFactory) errored: ${(err as Error).message}`);
+    return null;
+  }
+}
+
+/**
+ * This week's events, normalized and cached. Tries JBlanked first, falls back
+ * to the keyless ForexFactory feed. Returns [] (never throws) only when both
+ * sources are unavailable, so the dashboard just shows an empty calendar.
+ */
+export async function getWeeklyEvents(
+  force = false,
+): Promise<CalendarEvent[]> {
+  const now = Date.now();
+  if (!force && cache && now - cache.at < CACHE_TTL_MS) {
+    return cache.events;
+  }
+  const events =
+    (await fetchJBlanked()) ?? (await fetchForexFactory());
+  if (events) {
+    const sorted = [...events].sort((a, b) => a.time.localeCompare(b.time));
+    cache = { at: now, events: sorted };
+    return sorted;
+  }
+  return cache?.events ?? [];
 }
 
 /** Upcoming events (time >= now), optionally impact-filtered. */
