@@ -31,6 +31,11 @@ const envSchema = z.object({
   GROQ_API_KEY: z.string().optional(),
   GROQ_MODEL: z.string().default('llama-3.3-70b-versatile'),
 
+  // Economic calendar (JBlanked free Forex Factory feed). Optional: when the
+  // key is absent the calendar service returns an empty feed instead of
+  // throwing, so the dashboard degrades gracefully and tests stay offline.
+  JBLANKED_API_KEY: z.string().optional(),
+
   COOKIE_SECURE: z
     .string()
     .transform((v) => v === 'true')

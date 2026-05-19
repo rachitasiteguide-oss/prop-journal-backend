@@ -13,6 +13,7 @@ import connectRoutes from './connectRoutes';
 import instrumentRoutes from './instrumentRoutes';
 import publicRoutes from './publicRoutes';
 import aiRoutes from './aiRoutes';
+import economicCalendarRoutes from './economicCalendarRoutes';
 
 const router = Router();
 
@@ -35,5 +36,6 @@ router.use('/backtesting', backtestRoutes);
 router.use('/instruments', instrumentRoutes);
 router.use('/public', publicRoutes);
 router.use('/ai', aiRoutes);
+router.use('/economic-calendar', economicCalendarRoutes);
 
 export default router;
