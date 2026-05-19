@@ -14,6 +14,7 @@ import instrumentRoutes from './instrumentRoutes';
 import publicRoutes from './publicRoutes';
 import aiRoutes from './aiRoutes';
 import economicCalendarRoutes from './economicCalendarRoutes';
+import analyticsRoutes from './analyticsRoutes';
 
 const router = Router();
 
@@ -37,5 +38,6 @@ router.use('/instruments', instrumentRoutes);
 router.use('/public', publicRoutes);
 router.use('/ai', aiRoutes);
 router.use('/economic-calendar', economicCalendarRoutes);
+router.use('/analytics', analyticsRoutes);
 
 export default router;
