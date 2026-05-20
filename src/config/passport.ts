@@ -2,6 +2,8 @@ import passport from 'passport';
 import { Strategy as GoogleStrategy, Profile } from 'passport-google-oauth20';
 import { env } from './env';
 import { prisma } from './db';
+import { sendWelcomeEmail } from '../utils/email';
+import { logger } from '../utils/logger';
 
 passport.use(
   new GoogleStrategy(
@@ -23,25 +25,41 @@ passport.use(
           return done(new Error('No email provided by Google'));
         }
 
-        // Upsert user — find by googleId first, fallback to email
-        let user = await prisma.user.findUnique({
-          where: { googleId: profile.id },
-        });
+        // Match by googleId, then by email, then create. Tracking the "is this
+        // a brand-new account?" branch explicitly (rather than using upsert)
+        // is what lets us fire the welcome email on first signup only.
+        let user = await prisma.user.findUnique({ where: { googleId: profile.id } });
+        let isNew = false;
 
         if (!user) {
-          user = await prisma.user.upsert({
-            where: { email },
-            update: {
-              googleId: profile.id,
-              name: profile.displayName,
-              avatar: profile.photos?.[0]?.value ?? null,
-            },
-            create: {
-              email,
-              googleId: profile.id,
-              name: profile.displayName,
-              avatar: profile.photos?.[0]?.value ?? null,
-            },
+          const existingByEmail = await prisma.user.findUnique({ where: { email } });
+          if (existingByEmail) {
+            // Existing email/password account — link the Google identity.
+            user = await prisma.user.update({
+              where: { email },
+              data: {
+                googleId: profile.id,
+                name: existingByEmail.name ?? profile.displayName,
+                avatar: existingByEmail.avatar ?? profile.photos?.[0]?.value ?? null,
+              },
+            });
+          } else {
+            user = await prisma.user.create({
+              data: {
+                email,
+                googleId: profile.id,
+                name: profile.displayName,
+                avatar: profile.photos?.[0]?.value ?? null,
+              },
+            });
+            isNew = true;
+          }
+        }
+
+        if (isNew) {
+          // Fire-and-forget — never block the OAuth callback on email delivery.
+          sendWelcomeEmail(user.email, user.name).catch((err) => {
+            logger.error(`Welcome email failed for ${user!.email}: ${(err as Error).message}`);
           });
         }
 

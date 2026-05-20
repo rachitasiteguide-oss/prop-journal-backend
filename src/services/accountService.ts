@@ -51,16 +51,20 @@ export interface PortfolioOverview {
   };
 }
 
-export async function getAccountsOverview(userId: string): Promise<PortfolioOverview> {
-  const accounts = await prisma.account.findMany({
-    where: { userId, isActive: true },
-    orderBy: { createdAt: 'asc' },
-    select: {
-      ...ACCOUNT_SELECT,
-      trades: { select: { pnl: true, status: true } },
-    },
-  });
+// Pure aggregator extracted from getAccountsOverview so it can be unit-tested
+// without spinning up Prisma. The raw input matches the shape returned by the
+// prisma findMany() select below; tests fabricate it directly.
+export interface RawAccountForOverview {
+  id: string;
+  name: string;
+  broker: string | null;
+  accountType: AccountType;
+  currency: string;
+  balance: number;
+  trades: { pnl: number | null; status: string }[];
+}
 
+export function summarizeAccounts(accounts: RawAccountForOverview[]): PortfolioOverview {
   const rows: AccountOverview[] = accounts.map((a) => {
     const closed = a.trades.filter((t) => t.status === 'CLOSED' && t.pnl !== null);
     const wins = closed.filter((t) => (t.pnl ?? 0) > 0).length;
@@ -80,11 +84,16 @@ export async function getAccountsOverview(userId: string): Promise<PortfolioOver
     };
   });
 
-  const totalClosed = rows.reduce((s, r) => s + r.closedTrades, 0);
-  const totalWins = rows.reduce(
-    (s, r) => s + Math.round((r.winRate / 100) * r.closedTrades),
+  // Count wins from raw trades, not from `winRate * closedTrades` — the prior
+  // implementation rebuilt the count via Math.round which would skew the
+  // aggregate win rate slightly on accounts with awkward win counts (e.g.
+  // 7/9 = 77.7777% rounds back to 7, which happens to work, but 1/3 = 33.33%
+  // rounded back is fragile and inelegant).
+  const totalWins = accounts.reduce(
+    (s, a) => s + a.trades.filter((t) => t.status === 'CLOSED' && (t.pnl ?? 0) > 0).length,
     0,
   );
+  const totalClosed = rows.reduce((s, r) => s + r.closedTrades, 0);
 
   return {
     accounts: rows,
@@ -98,6 +107,18 @@ export async function getAccountsOverview(userId: string): Promise<PortfolioOver
       winRate: totalClosed ? (totalWins / totalClosed) * 100 : 0,
     },
   };
+}
+
+export async function getAccountsOverview(userId: string): Promise<PortfolioOverview> {
+  const accounts = await prisma.account.findMany({
+    where: { userId, isActive: true },
+    orderBy: { createdAt: 'asc' },
+    select: {
+      ...ACCOUNT_SELECT,
+      trades: { select: { pnl: true, status: true } },
+    },
+  });
+  return summarizeAccounts(accounts);
 }
 
 export interface CreateAccountInput {

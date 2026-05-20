@@ -8,6 +8,7 @@ import {
   updateTrade,
   deleteTrade,
 } from '../services/tradeService';
+import { getTradeReplay } from '../services/tradeReplayService';
 
 const createTradeSchema = z.object({
   accountId: z.string().cuid('Invalid account ID'),
@@ -112,6 +113,30 @@ export async function deleteTradeHandler(
   try {
     await deleteTrade(req.currentUser!.userId, req.params.id);
     res.status(204).send();
+  } catch (error) {
+    next(error);
+  }
+}
+
+const replayQuerySchema = z.object({
+  timeframe: z.string().optional(),
+  contextBars: z.coerce.number().int().min(5).max(200).optional(),
+});
+
+export async function getTradeReplayHandler(
+  req: Request<{ id: string }>,
+  res: Response,
+  next: NextFunction,
+): Promise<void> {
+  try {
+    const { timeframe, contextBars } = replayQuerySchema.parse(req.query);
+    const replay = await getTradeReplay({
+      userId: req.currentUser!.userId,
+      tradeId: req.params.id,
+      timeframe,
+      contextBars,
+    });
+    res.json({ status: 'success', data: replay });
   } catch (error) {
     next(error);
   }

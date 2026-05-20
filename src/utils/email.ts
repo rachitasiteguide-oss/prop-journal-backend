@@ -143,6 +143,53 @@ export async function sendWeeklyReviewEmail(
   return dispatch(to, 'Your Prop Journal weekly review', buildWeeklyReviewHtml(name, summary, stats));
 }
 
+// ── Welcome email ─────────────────────────────────────────────────────────────
+// Exported separately so tests can snapshot the body without exercising the
+// dispatcher.
+export function buildWelcomeHtml(name: string | null, dashboardUrl: string): string {
+  const greeting = name ? `Welcome, ${name}` : 'Welcome to Prop Journal';
+  return `
+<!DOCTYPE html>
+<html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"></head>
+<body style="margin:0;padding:0;background:#0D1610;font-family:'Helvetica Neue',Arial,sans-serif;">
+  <table width="100%" cellpadding="0" cellspacing="0" style="background:#0D1610;padding:40px 20px;">
+    <tr><td align="center">
+      <table width="560" cellpadding="0" cellspacing="0" style="background:#111916;border:1px solid rgba(58,74,63,0.4);border-radius:12px;padding:40px;">
+        <tr><td>
+          <p style="margin:0 0 8px;font-size:11px;font-weight:700;letter-spacing:3px;text-transform:uppercase;color:#00FFA3;">PROP JOURNAL</p>
+          <h1 style="margin:0 0 16px;font-size:24px;font-weight:900;color:#F5FFF5;letter-spacing:-0.5px;">${greeting}</h1>
+          <p style="margin:0 0 24px;font-size:15px;line-height:1.6;color:rgba(216,234,217,0.75);">
+            Your account is live. Prop Journal is built for serious prop traders — track every trade across multiple firms, see real-time compliance against FTMO / Apex / Topstep rules, and get AI-driven reviews of your edge.
+          </p>
+          <p style="margin:0 0 12px;font-size:13px;font-weight:700;letter-spacing:1.5px;text-transform:uppercase;color:#F5FFF5;">Start here</p>
+          <ul style="margin:0 0 28px;padding:0 0 0 20px;font-size:14px;line-height:1.7;color:rgba(216,234,217,0.85);">
+            <li>Connect an MT4 / MT5 account, or import a statement CSV</li>
+            <li>Pick a prop firm template in Challenges to track your evaluation rules</li>
+            <li>Log a trade with notes — the AI coach learns your patterns over time</li>
+          </ul>
+          <table cellpadding="0" cellspacing="0" style="margin-bottom:32px;">
+            <tr>
+              <td style="background:linear-gradient(135deg,#00FFA3,#00D488);border-radius:8px;">
+                <a href="${dashboardUrl}" style="display:inline-block;padding:14px 32px;font-size:13px;font-weight:900;letter-spacing:2px;text-transform:uppercase;color:#0D1610;text-decoration:none;">Open dashboard</a>
+              </td>
+            </tr>
+          </table>
+          <hr style="border:none;border-top:1px solid rgba(58,74,63,0.25);margin:0 0 20px;">
+          <p style="margin:0;font-size:12px;color:rgba(132,149,136,0.5);">
+            Questions? Reply to this email — a real person reads every reply.
+          </p>
+        </td></tr>
+      </table>
+    </td></tr>
+  </table>
+</body></html>`.trim();
+}
+
+export async function sendWelcomeEmail(to: string, name: string | null): Promise<boolean> {
+  const dashboardUrl = `${env.CLIENT_URL}/dashboard`;
+  return dispatch(to, 'Welcome to Prop Journal', buildWelcomeHtml(name, dashboardUrl));
+}
+
 // ── Sender ────────────────────────────────────────────────────────────────────
 export async function sendPasswordResetEmail(to: string, resetUrl: string): Promise<void> {
   const html = buildResetHtml(resetUrl);

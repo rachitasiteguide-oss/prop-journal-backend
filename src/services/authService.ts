@@ -4,7 +4,17 @@ import crypto from 'crypto';
 import { prisma } from '../config/db';
 import { AppError } from '../middlewares/errorHandler';
 import { env } from '../config/env';
-import { sendPasswordResetEmail } from '../utils/email';
+import { sendPasswordResetEmail, sendWelcomeEmail } from '../utils/email';
+import { logger } from '../utils/logger';
+
+// Fires the welcome email without awaiting so a Resend / SMTP outage cannot
+// block signup. Failures are logged and swallowed — the email is not critical
+// to onboarding and the user will land in /dashboard regardless.
+function fireWelcomeEmail(email: string, name: string | null): void {
+  sendWelcomeEmail(email, name).catch((err) => {
+    logger.error(`Welcome email failed for ${email}: ${(err as Error).message}`);
+  });
+}
 
 const SALT_ROUNDS = 12;
 
@@ -27,9 +37,11 @@ export async function registerWithEmail(
   if (existing) throw new AppError('Email already registered', 409);
 
   const hashedPassword = await bcrypt.hash(password, SALT_ROUNDS);
-  return prisma.user.create({
+  const user = await prisma.user.create({
     data: { email, name: name ?? null, password: hashedPassword },
   });
+  fireWelcomeEmail(user.email, user.name);
+  return user;
 }
 
 export async function loginWithEmail(email: string, password: string): Promise<User> {
