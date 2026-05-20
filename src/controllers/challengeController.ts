@@ -24,8 +24,12 @@ const createSchema = z.object({
 });
 
 const updateSchema = createSchema.partial().extend({
-  status:  statusEnum.optional(),
-  endDate: z.string().datetime().nullable().optional(),
+  status:        statusEnum.optional(),
+  endDate:       z.string().datetime().nullable().optional(),
+  tradingLocked: z.boolean().optional(),
+  // Pass null to clear the live-equity override and fall back to closed-trade
+  // accounting. Setting a value auto-stamps equityUpdatedAt = now.
+  currentEquity: z.number().nullable().optional(),
 });
 
 async function ensureAccountOwned(userId: string, accountId: string): Promise<void> {
@@ -91,13 +95,32 @@ export async function updateChallengeHandler(req: Request, res: Response, next: 
       await ensureAccountOwned(userId, body.accountId);
     }
 
-    const { startDate, endDate, ...rest } = body;
+    const { startDate, endDate, status, currentEquity, ...rest } = body;
+    // Transitioning to a terminal status auto-stamps endDate if the caller
+    // didn't provide one explicitly. Lets the UI offer simple "Mark passed"
+    // / "Mark failed" / "Withdraw" buttons without juggling the date.
+    const terminal = status && status !== 'ACTIVE';
+    const computedEndDate =
+      endDate !== undefined
+        ? endDate
+          ? new Date(endDate)
+          : null
+        : terminal && !existing.endDate
+          ? new Date()
+          : undefined;
+
     const updated = await prisma.challenge.update({
       where: { id },
       data: {
         ...rest,
+        ...(status ? { status } : {}),
         ...(startDate ? { startDate: new Date(startDate) } : {}),
-        ...(endDate !== undefined ? { endDate: endDate ? new Date(endDate) : null } : {}),
+        ...(computedEndDate !== undefined ? { endDate: computedEndDate } : {}),
+        ...(currentEquity !== undefined
+          ? currentEquity === null
+            ? { currentEquity: null, equityUpdatedAt: null }
+            : { currentEquity, equityUpdatedAt: new Date() }
+          : {}),
       },
     });
     res.json({ status: 'success', data: updated });

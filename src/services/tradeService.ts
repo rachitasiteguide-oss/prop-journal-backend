@@ -50,6 +50,22 @@ async function verifyAccountOwnership(userId: string, accountId: string): Promis
   if (account.userId !== userId) throw new AppError('Forbidden', 403);
 }
 
+// Trade entry is gated by the per-challenge lock: any ACTIVE challenge bound
+// to the account with tradingLocked=true blocks new trades on that account.
+// Accounts not bound to any challenge are unaffected.
+async function assertAccountNotLocked(accountId: string): Promise<void> {
+  const locked = await prisma.challenge.findFirst({
+    where: { accountId, status: 'ACTIVE', tradingLocked: true },
+    select: { id: true, firmName: true },
+  });
+  if (locked) {
+    throw new AppError(
+      `Trading is locked on the ${locked.firmName} challenge bound to this account`,
+      423, // Locked
+    );
+  }
+}
+
 /** Verify the trade exists and belongs to the user (via its account). */
 async function verifyTradeOwnership(userId: string, tradeId: string) {
   const trade = await prisma.trade.findUnique({
@@ -63,6 +79,7 @@ async function verifyTradeOwnership(userId: string, tradeId: string) {
 
 export async function createTrade(userId: string, data: CreateTradeInput) {
   await verifyAccountOwnership(userId, data.accountId);
+  await assertAccountNotLocked(data.accountId);
   return prisma.trade.create({ data });
 }
 
@@ -88,7 +105,8 @@ export async function getTradeById(userId: string, tradeId: string) {
 }
 
 export async function updateTrade(userId: string, tradeId: string, data: UpdateTradeInput) {
-  await verifyTradeOwnership(userId, tradeId);
+  const trade = await verifyTradeOwnership(userId, tradeId);
+  await assertAccountNotLocked(trade.accountId);
   return prisma.trade.update({ where: { id: tradeId }, data });
 }
 

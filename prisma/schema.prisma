@@ -25,7 +25,6 @@ model User {
 
   showOnLeaderboard    Boolean @default(false)
   onboardingCompleted  Boolean @default(false)
-  tradingLocked        Boolean @default(false)
 
   bio          String?
   phone        String?
@@ -395,6 +394,14 @@ model Challenge {
   dailyDrawdown  Float           // e.g. 5 = 5% daily loss limit (0 = no daily limit)
   minTradingDays Int             @default(0)
   ddType         ChallengeDdType @default(STATIC)
+  // When true, the bound Account rejects new trades. Per-challenge lock so a
+  // breach on one funded account doesn't paralyse unrelated accounts.
+  tradingLocked  Boolean         @default(false)
+  // Optional live-equity override. When set, metrics use this as the current
+  // balance instead of (accountSize + sum closed P&L). Lets traders factor in
+  // floating P&L on open positions ahead of any live broker sync.
+  currentEquity      Float?
+  equityUpdatedAt    DateTime?
   // IANA timezone for daily reset (e.g. "Europe/Prague" for FTMO,
   // "America/Chicago" for Topstep/Apex). Falls back to UTC.
   timezone       String          @default("UTC")
