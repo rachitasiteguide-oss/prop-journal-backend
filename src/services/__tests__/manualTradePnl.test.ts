@@ -8,7 +8,7 @@
 // QA-reported scenarios plus the instrument matrix and SELL sign.
 
 import { describe, it, expect } from 'vitest';
-import { calcRawPnl } from '../backtestEngineCore';
+import { calcRawPnl, getContractMultiplier } from '../backtestEngineCore';
 
 const r2 = (n: number) => parseFloat(n.toFixed(2));
 
@@ -48,5 +48,36 @@ describe('calcRawPnl — manual-trade P&L', () => {
 
   it('edge: unknown instrumentType throws instead of silently mis-scaling', () => {
     expect(() => calcRawPnl('BUY', 1, 2, 1, 'STOCK')).toThrow(/Unsupported instrumentType/);
+  });
+});
+
+describe('symbol-aware multiplier — non-FX instruments under the FOREX tab', () => {
+  it('QA bug row62: XAU/USD BUY 3385 → 3392 @ 0.01 lot = ~+$7, NOT +$7000', () => {
+    // Tester reported +$7000 (1000x inflation) because the wizard hardcodes
+    // instrumentType:'FOREX' and the engine applied the FX 100,000x multiplier
+    // to gold. Gold's contract is 100 oz/lot, so 7 points × 0.01 × 100 = $7.
+    const pnl = calcRawPnl('BUY', 3385, 3392, 0.01, 'FOREX', 'XAU/USD');
+    expect(r2(pnl)).toBe(7);
+  });
+
+  it('XAG/USD uses 5000 contract size', () => {
+    // 1 point × 0.1 lot × 5000 = $500
+    expect(calcRawPnl('BUY', 30.00, 31.00, 0.1, 'FOREX', 'XAG/USD')).toBeCloseTo(500, 6);
+  });
+
+  it('FX majors are unaffected by symbol override (still ×100,000)', () => {
+    expect(calcRawPnl('BUY', 1.0850, 1.0860, 0.1, 'FOREX', 'EUR/USD')).toBeCloseTo(10, 6);
+    expect(calcRawPnl('BUY', 1.0850, 1.0860, 0.1, 'FOREX', 'GBP/USD')).toBeCloseTo(10, 6);
+  });
+
+  it('getContractMultiplier accepts symbol in multiple shapes', () => {
+    expect(getContractMultiplier('XAU/USD',  'FOREX')).toBe(100);
+    expect(getContractMultiplier('XAUUSD',   'FOREX')).toBe(100);
+    expect(getContractMultiplier('XAU-USD',  'FOREX')).toBe(100);
+    expect(getContractMultiplier('XAUUSD=X', 'FOREX')).toBe(100);
+    expect(getContractMultiplier('xauusd',   'FOREX')).toBe(100);
+    expect(getContractMultiplier('EUR/USD',  'FOREX')).toBe(100_000);
+    expect(getContractMultiplier(null,       'FOREX')).toBe(100_000);
+    expect(getContractMultiplier('AAPL',     'STOCKS')).toBe(1);
   });
 });

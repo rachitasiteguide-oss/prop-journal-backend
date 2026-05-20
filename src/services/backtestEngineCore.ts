@@ -182,7 +182,49 @@ export type Signal = 'BUY' | 'SELL' | null;
 // uses this to write progress to the DB; tests pass a no-op.
 export type ProgressCb = (progress: number) => void;
 
-// ── P&L formula — instrument-aware ────────────────────────────────────────────
+// ── P&L formula — instrument- and symbol-aware ────────────────────────────────
+//
+// Standard FX majors trade in lots of 100,000 units, so a 1-pip move on
+// EUR/USD at 1 lot is $10. But some symbols listed under the same FOREX tab
+// in the UI have different contract sizes — most importantly metals:
+//   XAU/USD  (gold)   = 100 oz per lot         → ×100  (not ×100,000)
+//   XAG/USD  (silver) = 5,000 oz per lot       → ×5,000
+// Applying the FX ×100,000 multiplier to gold inflates P&L ~1000× (a 7-point
+// XAU move at 0.01 lot is $7 in reality, not $7,000). We look up the symbol
+// override first; otherwise we fall back to the instrument-type multiplier.
+
+// Strips formatting (slashes, dashes, spaces, Yahoo's "=X" suffix) so callers
+// can pass "XAU/USD", "XAUUSD", "XAU-USD" or "XAUUSD=X" interchangeably.
+function normalizeSymbol(s: string): string {
+  return s.toUpperCase().replace(/[/_\-= ]/g, '').replace(/=?X$/, '');
+}
+
+const SYMBOL_OVERRIDES: Record<string, number> = {
+  XAUUSD: 100,
+  XAGUSD: 5000,
+};
+
+export function getContractMultiplier(
+  symbol: string | undefined | null,
+  instrumentType: string,
+): number {
+  if (symbol) {
+    const norm = normalizeSymbol(symbol);
+    if (norm in SYMBOL_OVERRIDES) return SYMBOL_OVERRIDES[norm];
+  }
+  switch (instrumentType) {
+    case 'FOREX':   return 100_000;
+    case 'STOCKS':  return 1;
+    case 'FUTURES': return 1;
+    case 'CRYPTO':  return 1;
+    case 'CFD':     return 1;
+    default:
+      throw new Error(
+        `Unsupported instrumentType "${instrumentType}". ` +
+        `Expected one of FOREX, STOCKS, FUTURES, CRYPTO, CFD.`,
+      );
+  }
+}
 
 export function calcRawPnl(
   side: 'BUY' | 'SELL',
@@ -190,24 +232,11 @@ export function calcRawPnl(
   exitPrice: number,
   volume: number,
   instrumentType: string,
+  symbol?: string,
 ): number {
   const direction = side === 'BUY' ? 1 : -1;
   const priceDiff = (exitPrice - entryPrice) * direction;
-  switch (instrumentType) {
-    case 'FOREX':   return priceDiff * volume * 100000;
-    case 'STOCKS':  return priceDiff * volume;
-    case 'FUTURES': return priceDiff * volume;
-    case 'CRYPTO':  return priceDiff * volume;
-    case 'CFD':     return priceDiff * volume;
-    default:
-      // Refuse to silently apply the forex 100,000x multiplier to unknown
-      // instrument strings (e.g. "STOCK" singular). Would otherwise inflate
-      // reported P&L by 5 orders of magnitude.
-      throw new Error(
-        `Unsupported instrumentType "${instrumentType}". ` +
-        `Expected one of FOREX, STOCKS, FUTURES, CRYPTO, CFD.`,
-      );
-  }
+  return priceDiff * volume * getContractMultiplier(symbol, instrumentType);
 }
 
 // ── SL/TP exit check (Rules 1 + 2) ───────────────────────────────────────────
@@ -593,7 +622,7 @@ export function runEventLoopPure(
   // RISK_BASED / PCT_EQUITY sizing means volume varies per trade. MAE/MFE
   // is therefore `priceDistance * pnlPerUnitVolume * pos.volume`, never a
   // hoisted default-volume constant.
-  const pnlPerUnitVolume = calcRawPnl('BUY', 0, 1, 1, instrumentType);
+  const pnlPerUnitVolume = calcRawPnl('BUY', 0, 1, 1, instrumentType, symbol);
 
   // Compute the entry volume for a new position. Falls back to defaultVolume
   // (config.volume) on any non-finite result so a misconfigured sizing
@@ -677,7 +706,7 @@ export function runEventLoopPure(
   const currentEquity = (closePrice: number): number => {
     let eq = runningBalance;
     for (const pos of openPositions) {
-      eq += calcRawPnl(pos.side, pos.entryPrice, closePrice, pos.volume, instrumentType);
+      eq += calcRawPnl(pos.side, pos.entryPrice, closePrice, pos.volume, instrumentType, symbol);
       // Subtract the exit-leg commission that WOULD be charged if we closed now.
       // The entry leg was already deducted from runningBalance at entry? No —
       // currently commission is only deducted at trade close. So mark-to-market
@@ -692,7 +721,7 @@ export function runEventLoopPure(
   const forceCloseAll = (closePrice: number, atTime: Date): number => {
     const count = openPositions.length;
     for (const pos of openPositions) {
-      const rawPnl   = calcRawPnl(pos.side, pos.entryPrice, closePrice, pos.volume, instrumentType);
+      const rawPnl   = calcRawPnl(pos.side, pos.entryPrice, closePrice, pos.volume, instrumentType, symbol);
       const totalCommission = commissionPerLeg * 2;
       const finalPnl = rawPnl - totalCommission;
       runningBalance += finalPnl;
@@ -802,7 +831,7 @@ export function runEventLoopPure(
           : rawExit * (1 + slippagePct);
         const exitSlippagePrice = Math.abs(rawExit - exitFill);
 
-        const rawPnl   = calcRawPnl(pos.side, pos.entryPrice, exitFill, pos.volume, instrumentType);
+        const rawPnl   = calcRawPnl(pos.side, pos.entryPrice, exitFill, pos.volume, instrumentType, symbol);
         const totalCommission = commissionPerLeg * 2;
         const finalPnl = rawPnl - totalCommission;
         runningBalance += finalPnl;
@@ -970,7 +999,7 @@ export function runEventLoopPure(
   for (const pos of openPositions) {
     // No exit-leg slippage on force-close — we are evaluating mark-to-market
     // at the last candle, not a real fill against price action.
-    const rawPnl   = calcRawPnl(pos.side, pos.entryPrice, lastClose, pos.volume, instrumentType);
+    const rawPnl   = calcRawPnl(pos.side, pos.entryPrice, lastClose, pos.volume, instrumentType, symbol);
     const totalCommission = commissionPerLeg * 2;
     const finalPnl = rawPnl - totalCommission;
     runningBalance += finalPnl;

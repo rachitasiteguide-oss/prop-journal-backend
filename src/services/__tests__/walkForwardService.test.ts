@@ -94,6 +94,29 @@ describe('assessSelection (SR9 — flags arbitrary IS-best fallbacks)', () => {
     expect(a.reason).toMatch(/tie on sharpe/i);
   });
 
+  it('treats near-zero raw floats as a tie at the displayed (2dp) precision', () => {
+    // Tester observed a "best" being crowned when ALL rows displayed Sharpe
+    // = 0.00. Raw floats can differ by 1e-4 but render identically; we now
+    // detect that with an epsilon and still flag the window as unreliable.
+    const r = [
+      row({ paramValue: 15, tradeCount: 3, sharpe: 0.0001 }),
+      row({ paramValue: 23, tradeCount: 4, sharpe: 0.0040 }),
+      row({ paramValue: 30, tradeCount: 3, sharpe: 0.0020 }),
+    ];
+    const a = assessSelection(r, 'sharpe', pickBest(r, 'sharpe'));
+    expect(a.reliable).toBe(false);
+    expect(a.reason).toMatch(/tie on sharpe/i);
+  });
+
+  it('still flags a tie on totalPnl below the $0.5 display epsilon', () => {
+    const r = [
+      row({ paramValue: 15, tradeCount: 6, totalPnl: 0.1 }),
+      row({ paramValue: 23, tradeCount: 6, totalPnl: 0.4 }),
+    ];
+    const a = assessSelection(r, 'totalPnl', pickBest(r, 'totalPnl'));
+    expect(a.reliable).toBe(false);
+  });
+
   it('flags a winner chosen on too few (<5) in-sample trades', () => {
     const r = [
       row({ paramValue: 15, tradeCount: 1, sharpe: 0.9 }),

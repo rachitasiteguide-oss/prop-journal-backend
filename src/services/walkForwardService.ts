@@ -365,8 +365,18 @@ export function assessSelection(
     };
   }
 
+  // Compare metric values at the precision the UI displays. Raw floats that
+  // differ by 1e-4 still render as identical "0.00" — without this epsilon
+  // the picker would crown one as "best" when the user sees them tied.
   const metricVals = eligible.map(r => r[metric]);
-  if (Math.max(...metricVals) - Math.min(...metricVals) === 0) {
+  // sharpe / profitFactor render at 2 dp → ±0.005 is invisible
+  // totalPnl renders at 0 dp → ±0.5 is invisible
+  const TIE_EPSILON: Record<SelectionMetric, number> = {
+    sharpe:       0.005,
+    profitFactor: 0.005,
+    totalPnl:     0.5,
+  };
+  if (Math.max(...metricVals) - Math.min(...metricVals) < TIE_EPSILON[metric]) {
     return {
       reliable: false,
       reason: `All ${eligible.length} in-sample parameters tie on ${metric} (=${metricVals[0]}). IS-best (${bestParam}) is just the first by order, not a real optimum — changing the selection metric will not change the result.`,

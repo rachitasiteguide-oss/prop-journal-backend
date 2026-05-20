@@ -199,22 +199,50 @@ export async function fetchAndCacheCandles(
   // Fetch from Yahoo Finance — pass return:'array' so the result has a `.quotes`
   // field. We cast through unknown because yahoo-finance2 v3 ships overloaded
   // signatures that TypeScript doesn't always resolve correctly via commonjs.
-  let quotes: YFQuote[];
-  try {
-    const result = (await yf.chart(yfSymbol, {
+  //
+  // yf.chart() has no built-in timeout. When Yahoo stalls a connection (rate-
+  // limiting, 502, network issue) the promise hangs indefinitely and the only
+  // thing that frees the run is the orphanRunSweeper after 10 minutes — users
+  // see "RUNNING BACKTEST 3% — FETCH DATA" stuck forever. Race the call with
+  // a hard timeout, retry once on the first timeout, and surface a clear
+  // error instead of hanging.
+  const FETCH_TIMEOUT_MS = 30_000;
+  const fetchOnce = (): Promise<{ quotes: YFQuote[] }> => {
+    const call = yf.chart(yfSymbol, {
       period1: from,
       period2: to,
       interval,
       return: 'array',
-    } as Parameters<typeof yf.chart>[1])) as unknown as { quotes: YFQuote[] };
+    } as Parameters<typeof yf.chart>[1]) as unknown as Promise<{ quotes: YFQuote[] }>;
+    return new Promise((resolve, reject) => {
+      const t = setTimeout(
+        () => reject(new Error(`Yahoo Finance fetch timed out after ${FETCH_TIMEOUT_MS}ms`)),
+        FETCH_TIMEOUT_MS,
+      );
+      call.then(r => { clearTimeout(t); resolve(r); }, e => { clearTimeout(t); reject(e); });
+    });
+  };
+
+  let quotes: YFQuote[];
+  try {
+    let result: { quotes: YFQuote[] };
+    try {
+      result = await fetchOnce();
+    } catch (firstErr) {
+      const msg = firstErr instanceof Error ? firstErr.message : String(firstErr);
+      logger.warn(`Yahoo Finance first attempt failed for "${yfSymbol}": ${msg} — retrying once`);
+      result = await fetchOnce();
+    }
     quotes = result.quotes ?? [];
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
-    logger.error(`Yahoo Finance fetch failed for "${yfSymbol}": ${msg}`);
+    const isTimeout = /timed out/i.test(msg);
+    logger.error(`Yahoo Finance fetch failed for "${yfSymbol}" after retry: ${msg}`);
     throw new AppError(
-      `Could not fetch market data for "${symbol}". ` +
-        `Verify the symbol is correct for your instrument type.`,
-      502,
+      isTimeout
+        ? `Market data fetch for "${symbol}" timed out twice (Yahoo Finance unreachable or rate-limited). Try again in a minute.`
+        : `Could not fetch market data for "${symbol}". Verify the symbol is correct for your instrument type.`,
+      isTimeout ? 504 : 502,
     );
   }
 

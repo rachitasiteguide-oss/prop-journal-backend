@@ -3,7 +3,7 @@ import { AppError } from '../middlewares/errorHandler';
 import { logger } from '../utils/logger';
 import { BacktestStatus, TradeSide, TradeStatus, Prisma } from '@prisma/client';
 import { runAutomatedBacktest, type EngineConfig } from './backtestEngine';
-import { calcRawPnl } from './backtestEngineCore';
+import { calcRawPnl, getContractMultiplier } from './backtestEngineCore';
 import { type StrategyType } from './strategyDefinitions';
 import { getCachedCandles } from './candleService';
 
@@ -97,7 +97,7 @@ export async function addTrade(userId: string, sessionId: string, data: {
 
   if (data.exitPrice != null && data.exitPrice > 0) {
     const rawPnl = calcRawPnl(
-      data.side, data.entryPrice, data.exitPrice, data.volume ?? 1, session.instrumentType,
+      data.side, data.entryPrice, data.exitPrice, data.volume ?? 1, session.instrumentType, session.symbol,
     );
     pnl = parseFloat(rawPnl.toFixed(2));
     pnlPct = parseFloat(((pnl / session.startingBalance) * 100).toFixed(4));
@@ -150,7 +150,7 @@ export async function updateTrade(userId: string, sessionId: string, tradeId: st
   if (data.exitPrice != null && trade.exitPrice == null) {
     const newPnl = parseFloat(
       calcRawPnl(
-        trade.side, trade.entryPrice, data.exitPrice, trade.volume, session.instrumentType,
+        trade.side, trade.entryPrice, data.exitPrice, trade.volume, session.instrumentType, session.symbol,
       ).toFixed(2),
     );
     const newPnlPct = parseFloat(((newPnl / session.startingBalance) * 100).toFixed(4));
@@ -189,7 +189,7 @@ export async function bulkAddTrades(userId: string, sessionId: string, trades: A
     if (data.exitPrice != null && data.exitPrice > 0) {
       pnl = parseFloat(
         calcRawPnl(
-          data.side, data.entryPrice, data.exitPrice, data.volume ?? 1, session.instrumentType,
+          data.side, data.entryPrice, data.exitPrice, data.volume ?? 1, session.instrumentType, session.symbol,
         ).toFixed(2),
       );
       pnlPct = parseFloat(((pnl / session.startingBalance) * 100).toFixed(4));
@@ -401,10 +401,9 @@ export async function getSessionAnalytics(userId: string, sessionId: string) {
   // R-multiple: net P&L ÷ initial dollar risk. The dollar risk must be
   // computed at the SAME scale as pnl. pnl = priceDiff × volume × instrument
   // multiplier − commission, so initial risk = |entry − stopLoss| × volume ×
-  // instrument multiplier. The earlier formula omitted the multiplier, which
-  // made FOREX (multiplier 100,000) report ~100,000× inflated R (observed
-  // avgRMultiple ≈ 43,443). Mirror the engine's calcRawPnl multiplier map.
-  const instrumentMultiplier = session.instrumentType === 'FOREX' ? 100_000 : 1;
+  // instrument multiplier. Pull from the same single source of truth as
+  // calcRawPnl so symbol-specific overrides (XAU=100, XAG=5000) stay in sync.
+  const instrumentMultiplier = getContractMultiplier(session.symbol, session.instrumentType);
   const rMultiples = trades
     .map((t) => {
       if (t.stopLoss == null) return null;
