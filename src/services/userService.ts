@@ -32,7 +32,6 @@ export async function updateProfile(
     phone?: string;
     country?: string;
     timezone?: string;
-    challengeConfig?: object;
   },
 ): Promise<PublicUser> {
   const user = await prisma.user.update({

@@ -26,7 +26,6 @@ model User {
   showOnLeaderboard    Boolean @default(false)
   onboardingCompleted  Boolean @default(false)
   tradingLocked        Boolean @default(false)
-  challengeConfig      Json?
 
   bio          String?
   phone        String?
@@ -114,6 +113,7 @@ model Account {
   trades     Trade[]
   importJobs ImportJob[]
   snapshots  DailySnapshot[]
+  challenges Challenge[]
 
   @@index([userId])
   @@map("accounts")
@@ -180,6 +180,11 @@ model Trade {
   externalId  String?    // broker trade ID
   importJobId String?
   importJob   ImportJob? @relation(fields: [importJobId], references: [id])
+
+  // ── Attachments ─────────────────────────────────────────────────────────
+  // R2 object key for the trade's chart screenshot. Presigned URLs are
+  // generated on read — not stored — so they always reflect current ACL.
+  screenshotKey String?
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -284,6 +289,18 @@ enum ChallengeStatus {
   WITHDRAWN
 }
 
+// How the firm computes max drawdown:
+//   STATIC       — fixed floor at startingBalance × (1 - maxDrawdown%) (FTMO, MFF)
+//   TRAILING     — floor trails the equity peak by maxDrawdown%, often locking
+//                  at the initial balance once the account passes a threshold (Apex)
+//   EOD_TRAILING — floor trails the end-of-day balance only, intraday excursions
+//                  do not move it (Topstep)
+enum ChallengeDdType {
+  STATIC
+  TRAILING
+  EOD_TRAILING
+}
+
 // ── Notebook ──────────────────────────────────────────────────────────────────
 
 enum NoteType {
@@ -361,22 +378,28 @@ model Strategy {
 // Tracks a prop firm evaluation challenge
 
 model Challenge {
-  id     String @id @default(cuid())
-  userId String
-  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+  id        String  @id @default(cuid())
+  userId    String
+  user      User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+  accountId String
+  account   Account @relation(fields: [accountId], references: [id], onDelete: Cascade)
 
   firmName    String
   phase       ChallengePhase @default(PHASE_1)
   accountSize Float          // e.g. 100000 for $100k account
   currency    String         @default("USD")
 
-  // Rules
-  profitTarget   Float // e.g. 0.10 = 10%
-  maxDrawdown    Float // e.g. 0.10 = 10% (overall)
-  dailyDrawdown  Float // e.g. 0.05 = 5% (daily)
-  minTradingDays Int   @default(0)
+  // Rules — all percent values stored as numbers (e.g. 10 means 10%).
+  profitTarget   Float           // e.g. 10 = 10% profit target
+  maxDrawdown    Float           // e.g. 10 = 10% max overall drawdown
+  dailyDrawdown  Float           // e.g. 5 = 5% daily loss limit (0 = no daily limit)
+  minTradingDays Int             @default(0)
+  ddType         ChallengeDdType @default(STATIC)
+  // IANA timezone for daily reset (e.g. "Europe/Prague" for FTMO,
+  // "America/Chicago" for Topstep/Apex). Falls back to UTC.
+  timezone       String          @default("UTC")
 
-  startDate DateTime
+  startDate DateTime  @default(now())
   endDate   DateTime?
 
   status ChallengeStatus @default(ACTIVE)
@@ -386,6 +409,7 @@ model Challenge {
   updatedAt DateTime @updatedAt
 
   @@index([userId])
+  @@index([accountId])
   @@index([status])
   @@map("challenges")
 }
