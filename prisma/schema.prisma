@@ -412,6 +412,20 @@ model Challenge {
   status ChallengeStatus @default(ACTIVE)
   notes  String?
 
+  // FUNDED-phase metadata. profitSplitPct defaults to firm's typical split
+  // (e.g. 80 for 80/20 trader/firm). nextScaleTarget is the next account size
+  // milestone the firm will scale to on hitting a profit threshold; nullable
+  // when the firm doesn't offer scaling or the user hasn't entered it.
+  profitSplitPct  Float?
+  nextScaleTarget Float?
+
+  // Public share slug. When set, the challenge is reachable via /c/{slug}
+  // for unauthenticated viewers. Null = private (the default). Server-issued
+  // so no user-controllable input ever reaches the URL space.
+  publicSlug String? @unique
+
+  payouts ChallengePayout[]
+
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
@@ -419,6 +433,41 @@ model Challenge {
   @@index([accountId])
   @@index([status])
   @@map("challenges")
+}
+
+// ── ChallengePayout ──────────────────────────────────────────────────────────
+// Withdrawal records on a funded challenge. Tracks the trader-side ledger
+// for what they've requested, what's been paid, and what's still pending.
+
+enum PayoutStatus {
+  REQUESTED
+  PAID
+  REJECTED
+}
+
+model ChallengePayout {
+  id          String    @id @default(cuid())
+  challengeId String
+  challenge   Challenge @relation(fields: [challengeId], references: [id], onDelete: Cascade)
+
+  amount    Float        // gross requested, in challenge currency
+  netAmount Float?       // amount actually received after firm split
+  splitPct  Float?       // snapshot of profit split at payout time
+
+  status      PayoutStatus @default(REQUESTED)
+  method      String?      // e.g. "Wise", "Crypto", "Wire"
+  reference   String?      // firm-provided transaction reference
+  notes       String?
+
+  requestedAt DateTime  @default(now())
+  paidAt      DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([challengeId])
+  @@index([status])
+  @@map("challenge_payouts")
 }
 
 // ── Routines ──────────────────────────────────────────────────────────────────

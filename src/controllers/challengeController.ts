@@ -1,7 +1,14 @@
 import { Request, Response, NextFunction } from 'express';
 import { z } from 'zod';
+import crypto from 'crypto';
 import { prisma } from '../config/db';
 import { AppError } from '../middlewares/errorHandler';
+
+// Server-issued random slug for the public share URL. URL-safe base32, 12
+// chars — gives ~60 bits of entropy, plenty for non-enumerable public links.
+function generatePublicSlug(): string {
+  return crypto.randomBytes(8).toString('base64url').replace(/[-_]/g, '').slice(0, 12).toLowerCase();
+}
 
 const phaseEnum    = z.enum(['PHASE_1', 'PHASE_2', 'FUNDED']);
 const statusEnum   = z.enum(['ACTIVE', 'PASSED', 'FAILED', 'WITHDRAWN']);
@@ -24,12 +31,17 @@ const createSchema = z.object({
 });
 
 const updateSchema = createSchema.partial().extend({
-  status:        statusEnum.optional(),
-  endDate:       z.string().datetime().nullable().optional(),
-  tradingLocked: z.boolean().optional(),
+  status:           statusEnum.optional(),
+  endDate:          z.string().datetime().nullable().optional(),
+  tradingLocked:    z.boolean().optional(),
   // Pass null to clear the live-equity override and fall back to closed-trade
   // accounting. Setting a value auto-stamps equityUpdatedAt = now.
-  currentEquity: z.number().nullable().optional(),
+  currentEquity:    z.number().nullable().optional(),
+  profitSplitPct:   z.number().min(0).max(100).nullable().optional(),
+  nextScaleTarget:  z.number().positive().nullable().optional(),
+  // Server-issued slug when true; cleared when false. We never accept a
+  // user-supplied slug to prevent squatting and profanity in URLs.
+  isPublic:         z.boolean().optional(),
 });
 
 async function ensureAccountOwned(userId: string, accountId: string): Promise<void> {
@@ -95,7 +107,7 @@ export async function updateChallengeHandler(req: Request, res: Response, next: 
       await ensureAccountOwned(userId, body.accountId);
     }
 
-    const { startDate, endDate, status, currentEquity, ...rest } = body;
+    const { startDate, endDate, status, currentEquity, isPublic, ...rest } = body;
     // Transitioning to a terminal status auto-stamps endDate if the caller
     // didn't provide one explicitly. Lets the UI offer simple "Mark passed"
     // / "Mark failed" / "Withdraw" buttons without juggling the date.
@@ -121,6 +133,10 @@ export async function updateChallengeHandler(req: Request, res: Response, next: 
             ? { currentEquity: null, equityUpdatedAt: null }
             : { currentEquity, equityUpdatedAt: new Date() }
           : {}),
+        ...(isPublic === true && !existing.publicSlug
+          ? { publicSlug: generatePublicSlug() }
+          : {}),
+        ...(isPublic === false ? { publicSlug: null } : {}),
       },
     });
     res.json({ status: 'success', data: updated });

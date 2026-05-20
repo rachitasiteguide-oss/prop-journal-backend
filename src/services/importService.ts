@@ -3,6 +3,93 @@ import { prisma } from '../config/db';
 import { AppError } from '../middlewares/errorHandler';
 import { parseStatement, type ParsedTrade, type StatementFormat, type RowError } from './statementParser';
 
+// Returns the calendar date in the given IANA timezone as YYYY-MM-DD. String
+// comparison preserves chronological ordering. Used by snapshot bucketing
+// below to honour the firm's day boundary, not the server's UTC clock.
+function dayKeyInTz(d: Date | string, tz: string): string {
+  const date = d instanceof Date ? d : new Date(d);
+  try {
+    return new Intl.DateTimeFormat('en-CA', {
+      timeZone: tz,
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+    }).format(date);
+  } catch {
+    return new Intl.DateTimeFormat('en-CA', {
+      timeZone: 'UTC',
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+    }).format(date);
+  }
+}
+
+// After a successful import, rebuild DailySnapshot rows for the account and
+// (if there's an active challenge bound) stamp Challenge.currentEquity with
+// the latest running balance. Idempotent — wipes and recreates so the
+// derived view always matches the source-of-truth trades.
+//
+// Snapshots only get built when an active challenge exists on the account
+// because we need a startingBalance to compute openBalance/closeBalance. For
+// untracked accounts the snapshot rebuild is a no-op.
+async function rebuildSnapshotsFromTrades(accountId: string): Promise<void> {
+  const challenge = await prisma.challenge.findFirst({
+    where: { accountId, status: 'ACTIVE' },
+    select: { id: true, accountSize: true, timezone: true },
+  });
+  if (!challenge) return;
+
+  const trades = await prisma.trade.findMany({
+    where: { accountId, status: 'CLOSED', exitAt: { not: null } },
+    select: { exitAt: true, pnl: true, commission: true },
+    orderBy: { exitAt: 'asc' },
+  });
+
+  const tz = challenge.timezone || 'UTC';
+
+  // Bucket by firm-day so intraday trades collapse into one snapshot row.
+  const days = new Map<string, { pnl: number; commissions: number; tradeCount: number }>();
+  for (const t of trades) {
+    if (!t.exitAt) continue;
+    const key = dayKeyInTz(t.exitAt, tz);
+    const existing = days.get(key) ?? { pnl: 0, commissions: 0, tradeCount: 0 };
+    existing.pnl += t.pnl ?? 0;
+    existing.commissions += t.commission ?? 0;
+    existing.tradeCount += 1;
+    days.set(key, existing);
+  }
+
+  let running = challenge.accountSize;
+  const rows: Prisma.DailySnapshotCreateManyInput[] = [];
+  for (const dayKey of [...days.keys()].sort()) {
+    const d = days.get(dayKey)!;
+    const open = running;
+    running += d.pnl;
+    rows.push({
+      accountId,
+      // @db.Date stores only the date portion. The firm-TZ day key is
+      // serialised as UTC midnight of that date — read with the same TZ
+      // assumption to round-trip cleanly.
+      date: new Date(`${dayKey}T00:00:00Z`),
+      openBalance: open,
+      closeBalance: running,
+      pnl: d.pnl,
+      commissions: d.commissions,
+      tradeCount: d.tradeCount,
+    });
+  }
+
+  await prisma.$transaction([
+    prisma.dailySnapshot.deleteMany({ where: { accountId } }),
+    ...(rows.length > 0 ? [prisma.dailySnapshot.createMany({ data: rows })] : []),
+    prisma.challenge.update({
+      where: { id: challenge.id },
+      data: { currentEquity: running, equityUpdatedAt: new Date() },
+    }),
+  ]);
+}
+
 // Pure dedupe step extracted for unit-testing. Splits parsed trades into
 // "to insert" vs "skipped (duplicate externalId)" given the set of externalIds
 // already present in this account.
@@ -128,6 +215,18 @@ export async function runImport(input: RunImportInput): Promise<RunImportResult>
       finishedAt: new Date(),
     },
   });
+
+  // Rebuild DailySnapshot rows + push live equity into the bound challenge.
+  // Best-effort — log but don't fail the import if this step trips, since the
+  // trades are already saved and a future import will rebuild correctly.
+  if (inserted > 0) {
+    try {
+      await rebuildSnapshotsFromTrades(input.accountId);
+    } catch (err) {
+      // eslint-disable-next-line no-console
+      console.error('rebuildSnapshotsFromTrades failed', err);
+    }
+  }
 
   return {
     jobId: job.id,

@@ -16,6 +16,7 @@ import aiRoutes from './aiRoutes';
 import economicCalendarRoutes from './economicCalendarRoutes';
 import analyticsRoutes from './analyticsRoutes';
 import challengeRoutes from './challengeRoutes';
+import { payoutChallengeRoutes, payoutFlatRoutes } from './payoutRoutes';
 
 const router = Router();
 
@@ -40,6 +41,8 @@ router.use('/public', publicRoutes);
 router.use('/ai', aiRoutes);
 router.use('/economic-calendar', economicCalendarRoutes);
 router.use('/analytics', analyticsRoutes);
+router.use('/challenges/:challengeId/payouts', payoutChallengeRoutes);
 router.use('/challenges', challengeRoutes);
+router.use('/payouts', payoutFlatRoutes);
 
 export default router;
