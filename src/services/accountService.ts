@@ -1,5 +1,6 @@
 import { AccountType } from '@prisma/client';
 import { prisma } from '../config/db';
+import { AppError } from '../middlewares/errorHandler';
 
 const ACCOUNT_SELECT = {
   id: true,
@@ -140,5 +141,45 @@ export async function createAccount(userId: string, data: CreateAccountInput) {
       currency: data.currency ?? 'USD',
     },
     select: ACCOUNT_SELECT,
+  });
+}
+
+export interface UpdateAccountInput {
+  name?: string;
+  broker?: string | null;
+  accountType?: AccountType;
+  balance?: number;
+  currency?: string;
+}
+
+async function findOwnedAccount(userId: string, accountId: string) {
+  const account = await prisma.account.findFirst({
+    where: { id: accountId, userId, isActive: true },
+    select: { id: true },
+  });
+  if (!account) throw new AppError('Account not found', 404);
+  return account;
+}
+
+export async function updateAccount(
+  userId: string,
+  accountId: string,
+  data: UpdateAccountInput,
+) {
+  await findOwnedAccount(userId, accountId);
+  return prisma.account.update({
+    where: { id: accountId },
+    data,
+    select: ACCOUNT_SELECT,
+  });
+}
+
+// Soft delete — flips isActive so the account drops out of every query that
+// filters on isActive while its trades/history stay intact for audit.
+export async function deleteAccount(userId: string, accountId: string) {
+  await findOwnedAccount(userId, accountId);
+  await prisma.account.update({
+    where: { id: accountId },
+    data: { isActive: false },
   });
 }

@@ -27,7 +27,8 @@ export const INSTRUMENTS: Instrument[] = [
   { symbol: 'EUR/GBP', label: 'EUR/GBP', type: 'FOREX', pipValue: 12.5 },
   { symbol: 'EUR/JPY', label: 'EUR/JPY', type: 'FOREX', pipValue: 9.09 },
   { symbol: 'GBP/JPY', label: 'GBP/JPY', type: 'FOREX', pipValue: 9.09 },
-  { symbol: 'XAU/USD', label: 'XAU/USD (Gold)',   type: 'METAL', pipValue: 10 },
+  // Gold: 1 standard lot = 100 oz, 1 pip = $0.01 price move -> $1.00 per pip.
+  { symbol: 'XAU/USD', label: 'XAU/USD (Gold)',   type: 'METAL', pipValue: 1 },
   { symbol: 'XAG/USD', label: 'XAG/USD (Silver)', type: 'METAL', pipValue: 5 },
 ];
 
